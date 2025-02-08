@@ -764,8 +764,9 @@ drmgr_init_opcode_hashtable(hashtable_t *opcode_instrum_table)
 /* Returns false if opcode instrumentation is not applicable, i.e., no registration.
  */
 static bool
-drmgr_set_up_local_opcode_table(IN instrlist_t *bb, IN cb_list_t *insert_list,
-                                INOUT hashtable_t *local_opcode_instrum_table)
+drmgr_set_up_local_opcode_table(DR_PARAM_IN instrlist_t *bb,
+                                DR_PARAM_IN cb_list_t *insert_list,
+                                DR_PARAM_INOUT hashtable_t *local_opcode_instrum_table)
 {
     instr_t *inst, *next_inst;
     int opcode;
@@ -1099,7 +1100,8 @@ drmgr_bb_event_instrument_dups(void *drcontext, void *tag, instrlist_t *bb,
 }
 
 static void
-drmgr_bb_event_set_local_cb_info(void *drcontext, OUT local_cb_info_t *local_info)
+drmgr_bb_event_set_local_cb_info(void *drcontext,
+                                 DR_PARAM_OUT local_cb_info_t *local_info)
 {
     dr_rwlock_read_lock(bb_cb_lock);
     /* We use arrays to more easily support unregistering while in an event (i#1356).
@@ -1147,7 +1149,8 @@ drmgr_bb_event_set_local_cb_info(void *drcontext, OUT local_cb_info_t *local_inf
 }
 
 static void
-drmgr_bb_event_delete_local_cb_info(void *drcontext, IN local_cb_info_t *local_info)
+drmgr_bb_event_delete_local_cb_info(void *drcontext,
+                                    DR_PARAM_IN local_cb_info_t *local_info)
 {
     cblist_delete_local(drcontext, &local_info->iter_app2app,
                         BUFFER_SIZE_ELEMENTS(local_info->app2app));
@@ -2691,7 +2694,7 @@ static bool
 drmgr_unreserve_tls_cls_field(bool *taken, int idx)
 {
     bool res = false;
-    if (idx < 0 || idx > MAX_NUM_TLS)
+    if (idx < 0 || idx >= MAX_NUM_TLS)
         return false;
     dr_mutex_lock(tls_lock);
     if (taken[idx]) {
@@ -2723,7 +2726,7 @@ drmgr_get_tls_field(void *drcontext, int idx)
 {
     tls_array_t *tls = (tls_array_t *)dr_get_tls_field(drcontext);
     /* no need to check for tls_taken since would return NULL anyway (i#484) */
-    if (idx < 0 || idx > MAX_NUM_TLS || tls == NULL)
+    if (idx < 0 || idx >= MAX_NUM_TLS || tls == NULL)
         return NULL;
     return tls->tls[idx];
 }
@@ -2733,7 +2736,7 @@ bool
 drmgr_set_tls_field(void *drcontext, int idx, void *value)
 {
     tls_array_t *tls = (tls_array_t *)dr_get_tls_field(drcontext);
-    if (idx < 0 || idx > MAX_NUM_TLS || tls == NULL)
+    if (idx < 0 || idx >= MAX_NUM_TLS || tls == NULL)
         return false;
     /* going DR's traditional route of efficiency over safety: making this
      * a debug-only check to avoid cost in release build
@@ -2749,7 +2752,7 @@ drmgr_insert_read_tls_field(void *drcontext, int idx, instrlist_t *ilist, instr_
                             reg_id_t reg)
 {
     tls_array_t *tls = (tls_array_t *)dr_get_tls_field(drcontext);
-    if (idx < 0 || idx > MAX_NUM_TLS || !tls_taken[idx] || tls == NULL)
+    if (idx < 0 || idx >= MAX_NUM_TLS || !tls_taken[idx] || tls == NULL)
         return false;
     if (!reg_is_gpr(reg) || !reg_is_pointer_sized(reg))
         return false;
@@ -2768,7 +2771,7 @@ drmgr_insert_write_tls_field(void *drcontext, int idx, instrlist_t *ilist, instr
                              reg_id_t reg, reg_id_t scratch)
 {
     tls_array_t *tls = (tls_array_t *)dr_get_tls_field(drcontext);
-    if (idx < 0 || idx > MAX_NUM_TLS || !tls_taken[idx] || tls == NULL)
+    if (idx < 0 || idx >= MAX_NUM_TLS || !tls_taken[idx] || tls == NULL)
         return false;
     if (!reg_is_gpr(reg) || !reg_is_pointer_sized(reg) || !reg_is_gpr(scratch) ||
         !reg_is_pointer_sized(scratch))
@@ -3070,7 +3073,7 @@ void *
 drmgr_get_cls_field(void *drcontext, int idx)
 {
     tls_array_t *tls = (tls_array_t *)dr_get_tls_field(drcontext);
-    if (idx < 0 || idx > MAX_NUM_TLS || !cls_taken[idx] || tls == NULL)
+    if (idx < 0 || idx >= MAX_NUM_TLS || !cls_taken[idx] || tls == NULL)
         return NULL;
     return tls->cls[idx];
 }
@@ -3080,7 +3083,7 @@ bool
 drmgr_set_cls_field(void *drcontext, int idx, void *value)
 {
     tls_array_t *tls = (tls_array_t *)dr_get_tls_field(drcontext);
-    if (idx < 0 || idx > MAX_NUM_TLS || !cls_taken[idx] || tls == NULL)
+    if (idx < 0 || idx >= MAX_NUM_TLS || !cls_taken[idx] || tls == NULL)
         return false;
     tls->cls[idx] = value;
     return true;
@@ -3091,7 +3094,7 @@ void *
 drmgr_get_parent_cls_field(void *drcontext, int idx)
 {
     tls_array_t *tls = (tls_array_t *)dr_get_tls_field(drcontext);
-    if (idx < 0 || idx > MAX_NUM_TLS || !cls_taken[idx] || tls == NULL)
+    if (idx < 0 || idx >= MAX_NUM_TLS || !cls_taken[idx] || tls == NULL)
         return NULL;
     if (tls->prev != NULL)
         return tls->prev->cls[idx];
@@ -3104,7 +3107,7 @@ drmgr_insert_read_cls_field(void *drcontext, int idx, instrlist_t *ilist, instr_
                             reg_id_t reg)
 {
     tls_array_t *tls = (tls_array_t *)dr_get_tls_field(drcontext);
-    if (idx < 0 || idx > MAX_NUM_TLS || !cls_taken[idx] || tls == NULL)
+    if (idx < 0 || idx >= MAX_NUM_TLS || !cls_taken[idx] || tls == NULL)
         return false;
     if (!reg_is_gpr(reg) || !reg_is_pointer_sized(reg))
         return false;
@@ -3123,7 +3126,7 @@ drmgr_insert_write_cls_field(void *drcontext, int idx, instrlist_t *ilist, instr
                              reg_id_t reg, reg_id_t scratch)
 {
     tls_array_t *tls = (tls_array_t *)dr_get_tls_field(drcontext);
-    if (idx < 0 || idx > MAX_NUM_TLS || !cls_taken[idx] || tls == NULL)
+    if (idx < 0 || idx >= MAX_NUM_TLS || !cls_taken[idx] || tls == NULL)
         return false;
     if (!reg_is_gpr(reg) || !reg_is_pointer_sized(reg) || !reg_is_gpr(scratch) ||
         !reg_is_pointer_sized(scratch))
@@ -3410,7 +3413,8 @@ drmgr_get_emulated_instr_data(instr_t *instr, emulated_instr_t *emulated)
 
 DR_EXPORT
 bool
-drmgr_in_emulation_region(void *drcontext, OUT const emulated_instr_t **emulation_info)
+drmgr_in_emulation_region(void *drcontext,
+                          DR_PARAM_OUT const emulated_instr_t **emulation_info)
 {
     per_thread_t *pt = (per_thread_t *)drmgr_get_tls_field(drcontext, our_tls_idx);
     if (drmgr_current_bb_phase(drcontext) != DRMGR_PHASE_INSERTION)

@@ -169,7 +169,7 @@ add_gen_events_deps(drlibc)
 if (AARCH64)
   add_dependencies(drlibc gen_aarch64_codec)
 elseif (RISCV64)
-add_dependencies(drlibc gen_riscv64_codec)
+  add_dependencies(drlibc gen_riscv64_codec)
 endif (AARCH64)
 if (WIN32 AND "${CMAKE_GENERATOR}" MATCHES "Visual Studio")
   # for parallel build correctness we need a target dependence
@@ -279,6 +279,10 @@ set(DECODER_SRCS
   ir/${ARCH_NAME}/decode.c
   ir/encode_shared.c
   ir/${ARCH_NAME}/encode.c
+  ir/isa_regdeps/encoding_common.c
+  ir/isa_regdeps/encode.c
+  ir/isa_regdeps/decode.c
+  ir/isa_regdeps/disassemble.c
   ir/disassemble_shared.c
   ir/${ARCH_NAME}/disassemble.c
   ir/ir_utils_shared.c
@@ -331,6 +335,11 @@ set(ARCH_SRCS
 if (X86 AND X64)
   set(ARCH_SRCS ${ARCH_SRCS} arch/${ARCH_NAME}/x86_to_x64.c)
 endif (X86 AND X64)
+
+# XXX i#7226: Move x86 asm constants into here too.
+if (AARCHXX)
+  set(ARCH_SRCS ${ARCH_SRCS} arch/asm_offsets.c)
+endif (AARCHXX)
 
 if (WIN32)
   # i#894: Win8 WDK ntdll.lib does not list Ki routines so we make our own .lib.
@@ -386,13 +395,20 @@ if (UNIX)
       set(OS_SRCS ${OS_SRCS} unix/loader_android.c)
     else ()
       set(OS_SRCS ${OS_SRCS} unix/loader_linux.c)
+      if (AARCH64 OR (X86 AND X64))
+        set(OS_SRCS ${OS_SRCS} unix/coredump.c)
+      endif ()
     endif ()
     set(OS_SRCS ${OS_SRCS} unix/memquery_linux.c)
     set(OS_SRCS ${OS_SRCS} unix/memquery.c)
     set(OS_SRCS ${OS_SRCS} unix/memcache.c)
     set(OS_SRCS ${OS_SRCS} unix/module_elf.c)
     set(OS_SRCS ${OS_SRCS} unix/ksynch_linux.c)
-    set(OS_SRCS ${OS_SRCS} unix/tls_linux_${ARCH_NAME_SHARED}.c)
+    if (ARM OR AARCH64 OR RISCV64)
+      set(OS_SRCS ${OS_SRCS} unix/tls_linux_risc.c)
+    else ()
+      set(OS_SRCS ${OS_SRCS} unix/tls_linux_${ARCH_NAME}.c)
+    endif ()
     set(OS_SRCS ${OS_SRCS} unix/signal_linux.c)
     set(OS_SRCS ${OS_SRCS} unix/signal_linux_${ARCH_NAME}.c)
     set(OS_SRCS ${OS_SRCS} unix/native_elf.c)
@@ -841,7 +857,6 @@ function (configure_static_core_lib name hide_symbols)
 
     set(disable_pie_flag)
     # Older versions of GCC do not understand "-no-pie". See i#2083.
-    CHECK_C_COMPILER_FLAG("-no-pie" no_pie_avail)
     if (no_pie_avail)
       # If the compiler's default is "-pie", we must specify "-no-pie" when using "-r"
       # to avoid the error "-r and -pie may not be used together". See i#2083.
@@ -1142,8 +1157,9 @@ if (BUILD_TESTS AND
       append_property_string(TARGET unit_tests LINK_FLAGS "-Wl,${ld_entry_flag},_start")
     endif ()
     if (NOT ANDROID) # everything is inside Bionic on Android
-      target_link_libraries(unit_tests c dl m pthread)
+      target_link_libraries(unit_tests dl m pthread)
     endif ()
+    target_link_libraries(unit_tests drmemfuncs)
     set_preferred_base_start_and_end(unit_tests ${preferred_base} ON)
   else (UNIX)
     # Just like drinjectlib (see above) we need libc before ntdll
@@ -1158,7 +1174,7 @@ if (BUILD_TESTS AND
   if (APPLE)
     set_tests_properties(unit_tests PROPERTIES LABELS OSX)
   endif ()
-  if (AARCHXX)
+  if (AARCHXX OR RISCV64)
     set_tests_properties(unit_tests PROPERTIES LABELS RUNS_ON_QEMU)
   endif ()
   copy_target_to_device(unit_tests "${location_suffix}")

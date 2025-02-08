@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2015-2022 Google, Inc.  All rights reserved.
+ * Copyright (c) 2015-2025 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -60,6 +60,14 @@
 #include "common/options.h"
 #include "common/utils.h"
 
+using namespace ::dynamorio::drmemtrace;
+using ::dynamorio::droption::droption_parser_t;
+using ::dynamorio::droption::DROPTION_SCOPE_ALL;
+using ::dynamorio::droption::DROPTION_SCOPE_FRONTEND;
+using ::dynamorio::droption::droption_t;
+
+namespace {
+
 #define FATAL_ERROR(msg, ...)                               \
     do {                                                    \
         fprintf(stderr, "ERROR: " msg "\n", ##__VA_ARGS__); \
@@ -77,6 +85,7 @@
     } while (0)
 
 static analyzer_t *analyzer;
+static record_analyzer_t *record_analyzer;
 #ifdef UNIX
 static pid_t child;
 #endif
@@ -93,8 +102,14 @@ signal_handler(int sig, siginfo_t *info, void *cxt)
     if (child != 0)
         kill(child, SIGINT);
     // Destroy pipe file if it's open.
-    if (analyzer != NULL)
+    if (analyzer != nullptr) {
         delete analyzer;
+        analyzer = nullptr;
+    }
+    if (record_analyzer != nullptr) {
+        delete record_analyzer;
+        record_analyzer = nullptr;
+    }
     exit(1);
 }
 #endif
@@ -191,6 +206,8 @@ configure_application(char *app_name, char **app_argv, std::string tracer_ops,
     return true;
 }
 
+} // namespace
+
 int
 _tmain(int argc, const TCHAR *targv[])
 {
@@ -261,7 +278,8 @@ _tmain(int argc, const TCHAR *targv[])
                         droption_parser_t::usage_short(DROPTION_SCOPE_ALL).c_str());
         }
     }
-    have_trace_file = !op_infile.get_value().empty() || !op_indir.get_value().empty();
+    have_trace_file = !op_infile.get_value().empty() || !op_indir.get_value().empty() ||
+        !op_multi_indir.get_value().empty();
 
     if (!have_trace_file) {
         if (app_idx >= argc) {
@@ -306,11 +324,20 @@ _tmain(int argc, const TCHAR *targv[])
             FATAL_ERROR("invalid -outdir %s", op_outdir.get_value().c_str());
         }
     } else {
-        analyzer = new analyzer_multi_t;
-        if (!*analyzer) {
-            std::string error_string_ = analyzer->get_error_string();
-            FATAL_ERROR("failed to initialize analyzer%s%s",
-                        error_string_.empty() ? "" : ": ", error_string_.c_str());
+        if (op_tool.get_value() == RECORD_FILTER) {
+            record_analyzer = new record_analyzer_multi_t;
+            if (!*record_analyzer) {
+                std::string error_string_ = record_analyzer->get_error_string();
+                FATAL_ERROR("failed to initialize record analyzer%s%s",
+                            error_string_.empty() ? "" : ": ", error_string_.c_str());
+            }
+        } else {
+            analyzer = new analyzer_multi_t;
+            if (!*analyzer) {
+                std::string error_string_ = analyzer->get_error_string();
+                FATAL_ERROR("failed to initialize analyzer%s%s",
+                            error_string_.empty() ? "" : ": ", error_string_.c_str());
+            }
         }
     }
 
@@ -354,10 +381,18 @@ _tmain(int argc, const TCHAR *targv[])
     }
 
     if (!op_offline.get_value() || have_trace_file) {
-        if (!analyzer->run()) {
-            std::string error_string_ = analyzer->get_error_string();
-            FATAL_ERROR("failed to run analyzer%s%s", error_string_.empty() ? "" : ": ",
-                        error_string_.c_str());
+        if (analyzer != nullptr) {
+            if (!analyzer->run()) {
+                std::string error_string_ = analyzer->get_error_string();
+                FATAL_ERROR("failed to run analyzer%s%s",
+                            error_string_.empty() ? "" : ": ", error_string_.c_str());
+            }
+        } else {
+            if (!record_analyzer->run()) {
+                std::string error_string_ = record_analyzer->get_error_string();
+                FATAL_ERROR("failed to run analyzer%s%s",
+                            error_string_.empty() ? "" : ": ", error_string_.c_str());
+            }
         }
     }
 
@@ -393,6 +428,14 @@ _tmain(int argc, const TCHAR *targv[])
         }
         // release analyzer's space
         delete analyzer;
+    } else if (record_analyzer != nullptr) {
+        if (!record_analyzer->print_stats()) {
+            std::string error_string_ = record_analyzer->get_error_string();
+            FATAL_ERROR("failed to print results%s%s", error_string_.empty() ? "" : ": ",
+                        error_string_.c_str());
+        }
+        // release analyzer's space
+        delete record_analyzer;
     }
 
     sc = drfront_cleanup_args(argv, argc);

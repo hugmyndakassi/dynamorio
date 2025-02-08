@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2021-2023 Google, LLC  All rights reserved.
+ * Copyright (c) 2021-2025 Google, LLC  All rights reserved.
  * **********************************************************/
 
 /*
@@ -42,7 +42,13 @@
 #include "../common/memref.h"
 #include "../tracer/raw2trace.h"
 #include "../reader/file_reader.h"
+#include "../scheduler/scheduler.h"
+#include "decode_cache.h"
 #include "memref_gen.h"
+#include "trace_entry.h"
+
+namespace dynamorio {
+namespace drmemtrace {
 
 #undef ASSERT
 #define ASSERT(cond, msg, ...)        \
@@ -63,15 +69,12 @@
 
 // These are for our mock serial reader and must be in the same namespace
 // as file_reader_t's declaration.
-template <> file_reader_t<std::vector<trace_entry_t>>::~file_reader_t()
+template <> file_reader_t<std::vector<trace_entry_t>>::file_reader_t()
 {
 }
 
-template <>
-bool
-file_reader_t<std::vector<trace_entry_t>>::is_complete()
+template <> file_reader_t<std::vector<trace_entry_t>>::~file_reader_t()
 {
-    return false;
 }
 
 template <>
@@ -82,68 +85,48 @@ file_reader_t<std::vector<trace_entry_t>>::open_single_file(const std::string &p
 }
 
 template <>
-bool
-file_reader_t<std::vector<trace_entry_t>>::read_next_thread_entry(
-    size_t thread_index, OUT trace_entry_t *entry, OUT bool *eof)
+trace_entry_t *
+file_reader_t<std::vector<trace_entry_t>>::read_next_entry()
 {
-    return false;
+    return nullptr;
 }
-
-namespace {
-
-// Subclasses module_mapper_t and replaces the module loading with a buffer
-// of encoded instr_t.
-class module_mapper_test_t : public module_mapper_t {
-public:
-    module_mapper_test_t(void *drcontext, instrlist_t &instrs)
-        : module_mapper_t(nullptr)
-    {
-        byte *pc = instrlist_encode(drcontext, &instrs, decode_buf_, true);
-        ASSERT(pc - decode_buf_ < MAX_DECODE_SIZE, "decode buffer overflow");
-        // Clear do_module_parsing error; we can't cleanly make virtual b/c it's
-        // called from the constructor.
-        last_error_ = "";
-    }
-
-protected:
-    void
-    read_and_map_modules(void) override
-    {
-        modvec_.push_back(module_t("fake_exe", 0, decode_buf_, 0, MAX_DECODE_SIZE,
-                                   MAX_DECODE_SIZE, true));
-    }
-
-private:
-    static const int MAX_DECODE_SIZE = 1024;
-    byte decode_buf_[MAX_DECODE_SIZE];
-};
 
 class view_test_t : public view_t {
 public:
-    view_test_t(void *drcontext, instrlist_t &instrs, memref_tid_t thread,
-                uint64_t skip_refs, uint64_t sim_refs)
-        : view_t("", thread, skip_refs, sim_refs, "", 0)
+    view_test_t(void *drcontext, instrlist_t &instrs, uint64_t skip_refs,
+                uint64_t sim_refs)
+        : view_t("", skip_refs, sim_refs, "", 0)
+        , instrs_(&instrs)
     {
-        module_mapper_ =
-            std::unique_ptr<module_mapper_t>(new module_mapper_test_t(drcontext, instrs));
+    }
+    bool
+    init_decode_cache() override
+    {
+        decode_cache_ = std::unique_ptr<decode_cache_t<disasm_info_t>>(
+            new test_decode_cache_t<disasm_info_t>(dcontext_.dcontext, false, false,
+                                                   instrs_));
+        if (TESTANY(OFFLINE_FILE_TYPE_ENCODINGS, filetype_)) {
+            error_string_ =
+                decode_cache_->init(static_cast<offline_file_type_t>(filetype_));
+        } else if (!module_file_path_.empty()) {
+            error_string_ =
+                decode_cache_->init(static_cast<offline_file_type_t>(filetype_),
+                                    module_file_path_, knob_alt_module_dir_);
+        } else {
+            decode_cache_.reset(nullptr);
+        }
+        return error_string_.empty();
     }
 
-    std::string
-    initialize() override
-    {
-        module_mapper_->get_loaded_modules();
-        dr_disasm_flags_t flags =
-            IF_X86_ELSE(DR_DISASM_ATT, IF_AARCH64_ELSE(DR_DISASM_DR, DR_DISASM_ARM));
-        disassemble_set_syntax(flags);
-        return "";
-    }
+private:
+    instrlist_t *instrs_;
 };
 
 class view_nomod_test_t : public view_t {
 public:
-    view_nomod_test_t(void *drcontext, instrlist_t &instrs, memref_tid_t thread,
-                      uint64_t skip_refs, uint64_t sim_refs)
-        : view_t("", thread, skip_refs, sim_refs, "", 0)
+    view_nomod_test_t(void *drcontext, instrlist_t &instrs, uint64_t skip_refs,
+                      uint64_t sim_refs)
+        : view_t("", skip_refs, sim_refs, "", 0)
     {
     }
 };
@@ -205,7 +188,7 @@ run_test_helper(view_t &view, const std::vector<memref_t> &memrefs)
 bool
 test_no_limit(void *drcontext, instrlist_t &ilist, const std::vector<memref_t> &memrefs)
 {
-    view_test_t view(drcontext, ilist, 0, 0, 0);
+    view_test_t view(drcontext, ilist, 0, 0);
     std::string res = run_test_helper(view, memrefs);
     if (std::count(res.begin(), res.end(), '\n') != static_cast<int>(memrefs.size())) {
         std::cerr << "Incorrect line count\n";
@@ -227,7 +210,7 @@ test_num_memrefs(void *drcontext, instrlist_t &ilist,
 {
     ASSERT(static_cast<size_t>(num_memrefs) < memrefs.size(),
            "need more memrefs to limit");
-    view_test_t view(drcontext, ilist, 0, 0, num_memrefs);
+    view_test_t view(drcontext, ilist, 0, num_memrefs);
     std::string res = run_test_helper(view, memrefs);
     if (std::count(res.begin(), res.end(), '\n') != num_memrefs) {
         std::cerr << "Incorrect num_memrefs count: expect " << num_memrefs
@@ -256,7 +239,7 @@ test_skip_memrefs(void *drcontext, instrlist_t &ilist,
     }
     ASSERT(static_cast<size_t>(num_memrefs + skip_memrefs) <= memrefs.size(),
            "need more memrefs to skip");
-    view_test_t view(drcontext, ilist, 0, skip_memrefs, num_memrefs);
+    view_test_t view(drcontext, ilist, skip_memrefs, num_memrefs);
     std::string res = run_test_helper(view, memrefs);
     if (std::count(res.begin(), res.end(), '\n') != num_memrefs) {
         std::cerr << "Incorrect skipped_memrefs count: expect " << num_memrefs
@@ -292,41 +275,9 @@ test_skip_memrefs(void *drcontext, instrlist_t &ilist,
 }
 
 bool
-test_thread_limit(instrlist_t &ilist, const std::vector<memref_t> &memrefs,
-                  void *drcontext, int thread2_id)
-{
-    int thread2_count = 0;
-    for (const auto &memref : memrefs) {
-        if (memref.data.tid == thread2_id)
-            ++thread2_count;
-    }
-    view_test_t view(drcontext, ilist, thread2_id, 0, 0);
-    std::string res = run_test_helper(view, memrefs);
-    // Count the "       nnnn" prefixes (tid column value).
-    std::stringstream ss;
-    ss << std::setw(view.tid_column_width()) << thread2_id;
-    std::string prefix = ss.str();
-    int found_prefixes = 0;
-    size_t pos = 0;
-    while (pos != std::string::npos) {
-        pos = res.find(prefix, pos);
-        if (pos != std::string::npos) {
-            ++found_prefixes;
-            ++pos;
-        }
-    }
-    if (std::count(res.begin(), res.end(), '\n') != thread2_count ||
-        found_prefixes != thread2_count) {
-        std::cerr << "Incorrect thread2 count\n";
-        return false;
-    }
-    return true;
-}
-
-bool
 test_no_modules(void *drcontext, instrlist_t &ilist, const std::vector<memref_t> &memrefs)
 {
-    view_nomod_test_t view(drcontext, ilist, 0, 0, 0);
+    view_nomod_test_t view(drcontext, ilist, 0, 0);
     std::string res = run_test_helper(view, memrefs);
     if (std::count(res.begin(), res.end(), '\n') != static_cast<int>(memrefs.size())) {
         std::cerr << "Incorrect line count\n";
@@ -387,76 +338,60 @@ run_limit_tests(void *drcontext)
     // Ensure missing modules are fine.
     res = test_no_modules(drcontext, *ilist, memrefs) && res;
 
-    const memref_tid_t t2 = 21;
-    std::vector<memref_t> thread_memrefs = {
-        gen_marker(t1, TRACE_MARKER_TYPE_VERSION, 3),
-        gen_marker(t1, TRACE_MARKER_TYPE_FILETYPE, 0),
-        gen_marker(t1, TRACE_MARKER_TYPE_CACHE_LINE_SIZE, 64),
-        gen_instr(t1, offs_nop1),
-        gen_data(t1, true, 0x42, 4),
-        gen_branch(t1, offs_jz),
-        gen_branch(t1, offs_nop2),
-        gen_data(t1, true, 0x42, 4),
-        gen_marker(t2, TRACE_MARKER_TYPE_VERSION, 3),
-        gen_marker(t2, TRACE_MARKER_TYPE_FILETYPE, 0),
-        gen_marker(t2, TRACE_MARKER_TYPE_CACHE_LINE_SIZE, 64),
-        gen_marker(t2, TRACE_MARKER_TYPE_TIMESTAMP, 101),
-        gen_marker(t2, TRACE_MARKER_TYPE_CPU_ID, 3),
-        gen_instr(t2, offs_nop1),
-        gen_data(t2, true, 0x42, 4),
-        gen_branch(t2, offs_jz),
-        gen_branch(t2, offs_nop2),
-        gen_data(t2, true, 0x42, 4),
-    };
-    res = test_thread_limit(*ilist, thread_memrefs, drcontext, t2) && res;
-
     instrlist_clear_and_destroy(drcontext, ilist);
     return res;
 }
 
 /***************************************************************************
- * Serial reader mock.
+ * File reader mock.
  */
 
 class mock_file_reader_t : public file_reader_t<std::vector<trace_entry_t>> {
 public:
     mock_file_reader_t()
     {
+        at_eof_ = true;
     }
-    mock_file_reader_t(const std::vector<std::vector<trace_entry_t>> &entries)
-        : file_reader_t(std::vector<std::string>(1, "non-empty"))
+    mock_file_reader_t(const std::vector<trace_entry_t> &entries)
     {
-        input_files_ = entries;
-        pos_.resize(input_files_.size(), 0);
-        init();
+        input_file_ = entries;
+        pos_ = 0;
     }
-    bool
-    read_next_thread_entry(size_t thread_index, OUT trace_entry_t *entry,
-                           OUT bool *eof) override
+    trace_entry_t *
+    read_next_entry() override
     {
-        if (pos_[thread_index] >= input_files_[thread_index].size()) {
-            *eof = true;
-            return false;
+        if (at_eof_)
+            return nullptr;
+        trace_entry_t *entry = read_queued_entry();
+        if (entry != nullptr)
+            return entry;
+        if (pos_ >= input_file_.size()) {
+            at_eof_ = true;
+            return nullptr;
         }
-        *entry = input_files_[thread_index][pos_[thread_index]];
-        ++pos_[thread_index];
-        return true;
+        entry = &input_file_[pos_];
+        ++pos_;
+        return entry;
     }
 
 private:
-    std::vector<size_t> pos_;
+    size_t pos_;
 };
 
 std::string
 run_serial_test_helper(view_t &view,
-                       const std::vector<std::vector<trace_entry_t>> &entries)
+                       const std::vector<std::vector<trace_entry_t>> &entries,
+                       const std::vector<memref_tid_t> &tids)
+
 {
     class local_stream_t : public default_memtrace_stream_t {
     public:
         local_stream_t(view_t &view,
-                       const std::vector<std::vector<trace_entry_t>> &entries)
+                       const std::vector<std::vector<trace_entry_t>> &entries,
+                       const std::vector<memref_tid_t> &tids)
             : view_(view)
             , entries_(entries)
+            , tids_(tids)
         {
         }
 
@@ -468,10 +403,27 @@ run_serial_test_helper(view_t &view,
             std::stringstream capture;
             std::streambuf *prior = std::cerr.rdbuf(capture.rdbuf());
             // Run the tool.
-            mock_file_reader_t serial(entries_);
-            mock_file_reader_t end;
-            for (; serial != end; ++serial) {
-                const memref_t memref = *serial;
+            std::vector<scheduler_t::input_reader_t> readers;
+            for (size_t i = 0; i < entries_.size(); i++) {
+                readers.emplace_back(
+                    std::unique_ptr<mock_file_reader_t>(
+                        new mock_file_reader_t(entries_[i])),
+                    std::unique_ptr<mock_file_reader_t>(new mock_file_reader_t()),
+                    tids_[i]);
+            }
+            scheduler_t scheduler;
+            std::vector<scheduler_t::input_workload_t> sched_inputs;
+            sched_inputs.emplace_back(std::move(readers));
+            if (scheduler.init(sched_inputs, 1,
+                               scheduler_t::make_scheduler_serial_options()) !=
+                scheduler_t::STATUS_SUCCESS)
+                assert(false);
+            auto *stream = scheduler.get_stream(0);
+            memref_t memref;
+            for (scheduler_t::stream_status_t status = stream->next_record(memref);
+                 status != scheduler_t::STATUS_EOF;
+                 status = stream->next_record(memref)) {
+                assert(status == scheduler_t::STATUS_OK);
                 ++ref_count_;
                 if (type_is_instr(memref.instr.type))
                     ++instr_count_;
@@ -498,11 +450,12 @@ run_serial_test_helper(view_t &view,
     private:
         view_t &view_;
         const std::vector<std::vector<trace_entry_t>> &entries_;
+        const std::vector<memref_tid_t> &tids_;
         uint64_t ref_count_ = 0;
         uint64_t instr_count_ = 0;
     };
 
-    local_stream_t stream(view, entries);
+    local_stream_t stream(view, entries, tids);
     return stream.run();
 }
 
@@ -512,6 +465,7 @@ bool
 run_single_thread_chunk_test(void *drcontext)
 {
     const memref_tid_t t1 = 3;
+    std::vector<memref_tid_t> tids = { t1 };
     std::vector<std::vector<trace_entry_t>> entries = { {
         { TRACE_TYPE_HEADER, 0, { 0x1 } },
         { TRACE_TYPE_MARKER, TRACE_MARKER_TYPE_VERSION, { 3 } },
@@ -543,8 +497,8 @@ run_single_thread_chunk_test(void *drcontext)
           10           3:           3 ifetch       4 byte(s) @ 0x0000002a non-branch
 )DELIM";
     instrlist_t *ilist_unused = nullptr;
-    view_nomod_test_t view(drcontext, *ilist_unused, 0, 0, 0);
-    std::string res = run_serial_test_helper(view, entries);
+    view_nomod_test_t view(drcontext, *ilist_unused, 0, 0);
+    std::string res = run_serial_test_helper(view, entries, tids);
     // Make 64-bit match our 32-bit expect string.
     res = std::regex_replace(res, std::regex("0x000000000000002a"), "0x0000002a");
     if (res != expect) {
@@ -559,9 +513,10 @@ run_serial_chunk_test(void *drcontext)
 {
     // We ensure headers are not omitted incorrectly, which they were
     // in the first implementation of the reader skipping dup headers:
-    // i#/5538#issuecomment-1407235283
+    // i#5538#issuecomment-1407235283
     const memref_tid_t t1 = 3;
     const memref_tid_t t2 = 7;
+    std::vector<memref_tid_t> tids = { t1, t2 };
     std::vector<std::vector<trace_entry_t>> entries = {
         {
             { TRACE_TYPE_HEADER, 0, { 0x1 } },
@@ -601,17 +556,15 @@ run_serial_chunk_test(void *drcontext)
            2           0:           3 <marker: filetype 0x0>
            3           0:           3 <marker: cache line size 64>
            4           0:           3 <marker: chunk instruction count 20>
+           5           0:           3 <marker: timestamp 1001>
+           6           0:           3 <marker: tid 3 on core 2>
+           7           1:           3 ifetch       4 byte(s) @ 0x0000002a non-branch
+           8           2:           3 ifetch       4 byte(s) @ 0x0000002a non-branch
 ------------------------------------------------------------
-           5           0:           7 <marker: version 3>
-           6           0:           7 <marker: filetype 0x0>
-           7           0:           7 <marker: cache line size 64>
-           8           0:           7 <marker: chunk instruction count 2>
-------------------------------------------------------------
-           9           0:           3 <marker: timestamp 1001>
-          10           0:           3 <marker: tid 3 on core 2>
-          11           1:           3 ifetch       4 byte(s) @ 0x0000002a non-branch
-          12           2:           3 ifetch       4 byte(s) @ 0x0000002a non-branch
-------------------------------------------------------------
+           9           2:           7 <marker: version 3>
+          10           2:           7 <marker: filetype 0x0>
+          11           2:           7 <marker: cache line size 64>
+          12           2:           7 <marker: chunk instruction count 2>
           13           2:           7 <marker: timestamp 1002>
           14           2:           7 <marker: tid 7 on core 2>
           15           3:           7 ifetch       4 byte(s) @ 0x0000002a non-branch
@@ -626,8 +579,8 @@ run_serial_chunk_test(void *drcontext)
           22           6:           7 ifetch       4 byte(s) @ 0x0000002a non-branch
 )DELIM";
     instrlist_t *ilist_unused = nullptr;
-    view_nomod_test_t view(drcontext, *ilist_unused, 0, 0, 0);
-    std::string res = run_serial_test_helper(view, entries);
+    view_nomod_test_t view(drcontext, *ilist_unused, 0, 0);
+    std::string res = run_serial_test_helper(view, entries, tids);
     // Make 64-bit match our 32-bit expect string.
     res = std::regex_replace(res, std::regex("0x000000000000002a"), "0x0000002a");
     if (res != expect) {
@@ -643,16 +596,93 @@ run_chunk_tests(void *drcontext)
     return run_single_thread_chunk_test(drcontext) && run_serial_chunk_test(drcontext);
 }
 
-} // namespace
+/* Test view tool on a OFFLINE_FILE_TYPE_ARCH_REGDEPS trace.
+ * The trace hardcoded in entries is X64, so we only test on X64 architectures here.
+ */
+bool
+run_regdeps_test(void *drcontext)
+{
+#ifdef X64
+    const memref_tid_t t1 = 3;
+    std::vector<memref_tid_t> tids = { t1 };
+    constexpr addr_t PC_mov = 0x00007f6fdd3ec360;
+    constexpr addr_t PC_vpmovmskb = 0x00007f6fdc76cb35;
+    constexpr addr_t PC_vmovdqu = 0x00007f6fdc76cb2d;
+    constexpr addr_t PC_lock_cmpxchg = 0x00007f86ef03d107;
+    constexpr addr_t PC_branch = 0x00005605ec276c4d;
+    constexpr addr_t ENCODING_REGDEPS_ISA_mov = 0x0006090600010011;
+    constexpr addr_t ENCODING_REGDEPS_ISA_vpmovmskb = 0x004e032100004011;
+    constexpr addr_t ENCODING_REGDEPS_ISA_vmovdqu = 0x0009492100004811;
+    constexpr addr_t ENCODING_REGDEPS_ISA_lock_cmpxchg_1 = 0x0402020400001931;
+    constexpr addr_t ENCODING_REGDEPS_ISA_lock_cmpxchg_2 = 0x00000026;
+    constexpr addr_t ENCODING_REGDEPS_ISA_branch = 0x00002200;
+    std::vector<std::vector<trace_entry_t>> entries = { {
+        { TRACE_TYPE_HEADER, 0, { 0x1 } },
+        { TRACE_TYPE_MARKER, TRACE_MARKER_TYPE_VERSION, { 3 } },
+        { TRACE_TYPE_MARKER,
+          TRACE_MARKER_TYPE_FILETYPE,
+          { OFFLINE_FILE_TYPE_ARCH_REGDEPS | OFFLINE_FILE_TYPE_ENCODINGS |
+            OFFLINE_FILE_TYPE_SYSCALL_NUMBERS | OFFLINE_FILE_TYPE_BLOCKING_SYSCALLS } },
+        { TRACE_TYPE_THREAD, 0, { t1 } },
+        { TRACE_TYPE_PID, 0, { t1 } },
+        { TRACE_TYPE_MARKER, TRACE_MARKER_TYPE_CACHE_LINE_SIZE, { 64 } },
+        { TRACE_TYPE_MARKER, TRACE_MARKER_TYPE_CHUNK_INSTR_COUNT, { 5 } },
+        { TRACE_TYPE_MARKER, TRACE_MARKER_TYPE_TIMESTAMP, { 1002 } },
+        { TRACE_TYPE_MARKER, TRACE_MARKER_TYPE_CPU_ID, { 2 } },
+        { TRACE_TYPE_ENCODING, 8, { ENCODING_REGDEPS_ISA_mov } },
+        { TRACE_TYPE_INSTR, 3, { PC_mov } },
+        { TRACE_TYPE_ENCODING, 8, { ENCODING_REGDEPS_ISA_vpmovmskb } },
+        { TRACE_TYPE_INSTR, 4, { PC_vpmovmskb } },
+        { TRACE_TYPE_ENCODING, 8, { ENCODING_REGDEPS_ISA_vmovdqu } },
+        { TRACE_TYPE_INSTR, 4, { PC_vmovdqu } },
+        { TRACE_TYPE_ENCODING, 8, { ENCODING_REGDEPS_ISA_lock_cmpxchg_1 } },
+        { TRACE_TYPE_ENCODING, 4, { ENCODING_REGDEPS_ISA_lock_cmpxchg_2 } },
+        { TRACE_TYPE_INSTR, 10, { PC_lock_cmpxchg } },
+        { TRACE_TYPE_ENCODING, 4, { ENCODING_REGDEPS_ISA_branch } },
+        { TRACE_TYPE_INSTR_TAKEN_JUMP, 2, { PC_branch } },
+        { TRACE_TYPE_FOOTER, 0, { 0 } },
+    } };
+
+    /* clang-format off */
+    std::string expect =
+        std::string(R"DELIM(           1           0:           3 <marker: version 3>
+           2           0:           3 <marker: filetype 0x20e00>
+           3           0:           3 <marker: cache line size 64>
+           4           0:           3 <marker: chunk instruction count 5>
+           5           0:           3 <marker: timestamp 1002>
+           6           0:           3 <marker: tid 3 on core 2>
+           7           1:           3 ifetch       3 byte(s) @ 0x00007f6fdd3ec360 00010011 00060906 move [8byte]       %rv4 -> %rv7
+           8           2:           3 ifetch       4 byte(s) @ 0x00007f6fdc76cb35 00004011 004e0321 simd [32byte]       %rv76 -> %rv1
+           9           3:           3 ifetch       4 byte(s) @ 0x00007f6fdc76cb2d 00004811 00094921 load simd [32byte]       %rv7 -> %rv71
+          10           4:           3 ifetch      10 byte(s) @ 0x00007f86ef03d107 00001931 04020204 load store [4byte]       %rv0 %rv2 %rv36 -> %rv0
+          10           4:           3                                             00000026
+          11           5:           3 ifetch       2 byte(s) @ 0x00005605ec276c4d 00002200          branch  (taken)
+)DELIM");
+    /* clang-format on */
+
+    instrlist_t *ilist_unused = nullptr;
+    view_nomod_test_t view(drcontext, *ilist_unused, 0, 0);
+    std::string res = run_serial_test_helper(view, entries, tids);
+    if (res != expect) {
+        std::cerr << "Output mismatch: got |" << res << "| expected |" << expect << "|\n";
+        return false;
+    }
+#endif
+    return true;
+}
 
 int
-main(int argc, const char *argv[])
+test_main(int argc, const char *argv[])
 {
     void *drcontext = dr_standalone_init();
-    if (run_limit_tests(drcontext) && run_chunk_tests(drcontext)) {
+    if (run_limit_tests(drcontext) && run_chunk_tests(drcontext) &&
+        run_regdeps_test(drcontext)) {
         std::cerr << "view_test passed\n";
         return 0;
     }
     std::cerr << "view_test FAILED\n";
     exit(1);
 }
+
+} // namespace drmemtrace
+} // namespace dynamorio

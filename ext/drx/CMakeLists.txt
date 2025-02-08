@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2013-2016 Google, Inc.    All rights reserved.
+# Copyright (c) 2013-2025 Google, Inc.    All rights reserved.
 # **********************************************************
 
 # Redistribution and use in source and binary forms, with or without
@@ -42,6 +42,8 @@ set(DynamoRIO_USE_LIBC OFF)
 set(srcs
   drx.c
   drx_buf.c
+  scatter_gather_${ARCH_NAME}.c
+  scatter_gather_shared.c
   # add more here
   )
 
@@ -56,7 +58,7 @@ add_library(drx SHARED ${srcs})
 # while private loader means preferred base is not required, more efficient
 # to avoid rebase so we avoid conflict w/ client and other exts
 set(PREFERRED_BASE 0x77000000)
-configure_extension(drx OFF)
+configure_extension(drx OFF OFF)
 use_DynamoRIO_extension(drx drcontainers)
 use_DynamoRIO_extension(drx drmgr)
 use_DynamoRIO_extension(drx drreg)
@@ -70,15 +72,25 @@ macro(configure_drx_target target)
   if (WIN32)
     target_link_libraries(${target} ntdll_imports)
   endif ()
+  target_include_directories(${target}
+    PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR})
 endmacro()
 
 configure_drx_target(drx)
 
 add_library(drx_static STATIC ${srcs_static})
-configure_extension(drx_static ON)
+configure_extension(drx_static ON OFF)
 use_DynamoRIO_extension(drx_static drcontainers)
 use_DynamoRIO_extension(drx_static drmgr_static)
 use_DynamoRIO_extension(drx_static drreg_static)
 configure_drx_target(drx_static)
+
+add_library(drx_drstatic STATIC ${srcs_static})
+configure_extension(drx_drstatic ON ON)
+use_DynamoRIO_extension(drx_drstatic drcontainers_drstatic)
+use_DynamoRIO_extension(drx_drstatic drmgr_drstatic)
+use_DynamoRIO_extension(drx_drstatic drreg_drstatic)
+configure_drx_target(drx_drstatic)
 
 install_ext_header(drx.h)

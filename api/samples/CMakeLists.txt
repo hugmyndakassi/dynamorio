@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2010-2021 Google, Inc.    All rights reserved.
+# Copyright (c) 2010-2023 Google, Inc.    All rights reserved.
 # Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # **********************************************************
 
@@ -54,6 +54,8 @@ else ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
 endif ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
 
 project(DynamoRIO_samples)
+
+include(CheckIncludeFile)
 
 if ("${CMAKE_VERSION}" VERSION_EQUAL "3.9" OR
    "${CMAKE_VERSION}" VERSION_GREATER "3.9")
@@ -239,8 +241,10 @@ add_sample_client(memtrace_simple "memtrace_simple.c;utils.c" "drmgr;drreg;druti
 add_sample_client(memval_simple   "memval_simple.c;utils.c"   "drmgr;drreg;drutil;drx")
 add_sample_client(instrace_simple "instrace_simple.c;utils.c" "drmgr;drreg;drx")
 add_sample_client(opcode_count    "opcode_count.cpp"    "drmgr;drreg;drx;droption")
-if (X86) # FIXME i#1551, i#1569: port to ARM and AArch64
-  add_sample_client(cbr         "cbr.c"           "drmgr")
+if (X86 OR RISCV64) # TODO i#1551, #1569: Port to AArchXX.
+add_sample_client(cbr "cbr.c" "drmgr")
+endif ()
+if (X86) # FIXME i#1551, i#1569, i#3544: port to ARM/AArch64/RISCV64
   add_sample_client(countcalls  "countcalls.c"    "drmgr;drreg")
   add_sample_client(inc2add     "inc2add.c"       "drmgr;drreg")
   add_sample_client(memtrace_x86_binary "memtrace_x86.c;utils.c"

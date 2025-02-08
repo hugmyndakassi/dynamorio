@@ -1,5 +1,5 @@
 /* *******************************************************************************
- * Copyright (c) 2012-2022 Google, Inc.  All rights reserved.
+ * Copyright (c) 2012-2024 Google, Inc.  All rights reserved.
  * Copyright (c) 2011 Massachusetts Institute of Technology  All rights reserved.
  * Copyright (c) 2008-2010 VMware, Inc.  All rights reserved.
  * *******************************************************************************/
@@ -40,13 +40,6 @@
 #include "instrument.h"
 #include <stddef.h> /* offsetof */
 #include <link.h>   /* Elf_Symndx */
-
-#ifndef ANDROID
-struct tlsdesc_t {
-    ptr_int_t (*entry)(struct tlsdesc_t *);
-    void *arg;
-};
-#endif
 
 #ifdef ANDROID
 /* The entries in the .hash table always have a size of 32 bits.  */
@@ -211,8 +204,8 @@ elf_dt_abs_addr(ELF_DYNAMIC_ENTRY_TYPE *dyn, app_pc base, size_t size, size_t vi
 static bool
 module_fill_os_data(ELF_PROGRAM_HEADER_TYPE *prog_hdr, /* PT_DYNAMIC entry */
                     app_pc mod_base, app_pc mod_max_end, app_pc base, size_t view_size,
-                    bool at_map, bool dyn_reloc, ptr_int_t load_delta, OUT char **soname,
-                    OUT os_module_data_t *out_data)
+                    bool at_map, bool dyn_reloc, ptr_int_t load_delta,
+                    DR_PARAM_OUT char **soname, DR_PARAM_OUT os_module_data_t *out_data)
 {
     /* if at_map use file offset as segments haven't been remapped yet and
      * the dynamic section isn't usually in the first segment (XXX: in
@@ -307,7 +300,13 @@ module_fill_os_data(ELF_PROGRAM_HEADER_TYPE *prog_hdr, /* PT_DYNAMIC entry */
 
                 /* test string readability while still in try/except
                  * in case we screwed up somewhere or module is
-                 * malformed/only partially mapped */
+                 * malformed/only partially mapped.
+                 *
+                 * i#3385: strlen fails here in case when .dynstr is
+                 * placed in the end of segment (thus soname is not mapped
+                 * at the moment). We'll try to re-init module data again
+                 * in instrument_module_load_trigger() at first execution.
+                 */
                 if (*soname != NULL && strlen(*soname) == -1) {
                     ASSERT_NOT_REACHED();
                 }
@@ -340,10 +339,11 @@ module_fill_os_data(ELF_PROGRAM_HEADER_TYPE *prog_hdr, /* PT_DYNAMIC entry */
  */
 bool
 module_walk_program_headers(app_pc base, size_t view_size, bool at_map, bool dyn_reloc,
-                            OUT app_pc *out_base /* relative pc */,
-                            OUT app_pc *out_first_end /* relative pc */,
-                            OUT app_pc *out_max_end /* relative pc */,
-                            OUT char **out_soname, OUT os_module_data_t *out_data)
+                            DR_PARAM_OUT app_pc *out_base /* relative pc */,
+                            DR_PARAM_OUT app_pc *out_first_end /* relative pc */,
+                            DR_PARAM_OUT app_pc *out_max_end /* relative pc */,
+                            DR_PARAM_OUT char **out_soname,
+                            DR_PARAM_OUT os_module_data_t *out_data)
 {
     app_pc mod_base = NULL, first_end = NULL, max_end = NULL;
     char *soname = NULL;
@@ -399,10 +399,15 @@ module_walk_program_headers(app_pc base, size_t view_size, bool at_map, bool dyn
                         LOG(GLOBAL, LOG_INTERP | LOG_VMAREAS, 2,
                             "%s " PFX ": %s dynamic info\n", __FUNCTION__, base,
                             out_data->have_dynamic_info ? "have" : "no");
-                        /* i#1860: on Android a later os_module_update_dynamic_info() will
-                         * fill in info once .dynamic is mapped in.
+                        /* i#1860: on 32-bit Android a later
+                         * os_module_update_dynamic_info() will fill in info
+                         * once .dynamic is mapped in.
+                         * i#7215: This is not needed on newer versions of 64-bit
+                         * Android, however we are not able to test with newer
+                         * versions of 32-bit Android, so this may still be
+                         * required.
                          */
-                        IF_NOT_ANDROID(ASSERT(out_data->have_dynamic_info));
+                        IF_NOT_ANDROID32(ASSERT(out_data->have_dynamic_info));
                     }
                 });
             }
@@ -498,9 +503,10 @@ os_module_update_dynamic_info(app_pc base, size_t size, bool at_map)
 
 bool
 module_read_program_header(app_pc base, uint segment_num,
-                           OUT app_pc *segment_base /* relative pc */,
-                           OUT app_pc *segment_end /* relative pc */,
-                           OUT uint *segment_prot, OUT size_t *segment_align)
+                           DR_PARAM_OUT app_pc *segment_base /* relative pc */,
+                           DR_PARAM_OUT app_pc *segment_end /* relative pc */,
+                           DR_PARAM_OUT uint *segment_prot,
+                           DR_PARAM_OUT size_t *segment_align)
 {
     ELF_HEADER_TYPE *elf_hdr = (ELF_HEADER_TYPE *)base;
     ELF_PROGRAM_HEADER_TYPE *prog_hdr;
@@ -617,7 +623,7 @@ elf_gnu_hash(const char *name)
 
 static bool
 elf_sym_matches(ELF_SYM_TYPE *sym, char *strtab, const char *name,
-                bool *is_indirect_code OUT)
+                bool *is_indirect_code DR_PARAM_OUT)
 {
     /* i#248/PR 510905: FC12 libc strlen has this type */
     bool is_ifunc = (ELF_ST_TYPE(sym->st_info) == STT_GNU_IFUNC);
@@ -720,7 +726,7 @@ elf_hash_lookup(const char *name, ptr_int_t load_delta, ELF_SYM_TYPE *symtab,
 /* get the address by using the hashtable information in os_module_data_t */
 app_pc
 get_proc_address_from_os_data(os_module_data_t *os_data, ptr_int_t load_delta,
-                              const char *name, OUT bool *is_indirect_code)
+                              const char *name, DR_PARAM_OUT bool *is_indirect_code)
 {
     if (os_data->hashtab != NULL) {
         Elf_Symndx *buckets = (Elf_Symndx *)os_data->buckets;
@@ -748,7 +754,8 @@ get_proc_address_from_os_data(os_module_data_t *os_data, ptr_int_t load_delta,
  * and use it here
  */
 generic_func_t
-get_proc_address_ex(module_base_t lib, const char *name, bool *is_indirect_code OUT)
+get_proc_address_ex(module_base_t lib, const char *name,
+                    bool *is_indirect_code DR_PARAM_OUT)
 {
     app_pc res = NULL;
     module_area_t *ma;
@@ -894,8 +901,8 @@ module_get_section_with_name(app_pc image, size_t img_size, const char *sec_name
 
 /* fills os_data and initializes the hash table. */
 bool
-module_read_os_data(app_pc base, bool dyn_reloc, OUT ptr_int_t *load_delta,
-                    OUT os_module_data_t *os_data, OUT char **soname)
+module_read_os_data(app_pc base, bool dyn_reloc, DR_PARAM_OUT ptr_int_t *load_delta,
+                    DR_PARAM_OUT os_module_data_t *os_data, DR_PARAM_OUT char **soname)
 {
     app_pc v_base, v_end;
     ELF_HEADER_TYPE *elf_hdr = (ELF_HEADER_TYPE *)base;
@@ -992,7 +999,7 @@ module_init_os_privmod_data_from_dyn(os_privmod_data_t *opd, ELF_DYNAMIC_ENTRY_T
  */
 void
 module_get_os_privmod_data(app_pc base, size_t size, bool dyn_reloc,
-                           OUT os_privmod_data_t *pd)
+                           DR_PARAM_OUT os_privmod_data_t *pd)
 {
     app_pc mod_base, mod_end;
     ELF_HEADER_TYPE *elf_hdr = (ELF_HEADER_TYPE *)base;
@@ -1072,7 +1079,8 @@ module_find_phdr(app_pc base, uint phdr_type)
 }
 
 bool
-module_get_relro(app_pc base, OUT app_pc *relro_base, OUT size_t *relro_size)
+module_get_relro(app_pc base, DR_PARAM_OUT app_pc *relro_base,
+                 DR_PARAM_OUT size_t *relro_size)
 {
     ELF_PROGRAM_HEADER_TYPE *phdr = module_find_phdr(base, PT_GNU_RELRO);
     app_pc mod_base;
@@ -1094,7 +1102,6 @@ module_lookup_symbol(ELF_SYM_TYPE *sym, os_privmod_data_t *pd)
 {
     app_pc res;
     const char *name;
-    privmod_t *mod;
     bool is_ifunc;
     dcontext_t *dcontext = get_thread_private_dcontext();
 
@@ -1123,11 +1130,21 @@ module_lookup_symbol(ELF_SYM_TYPE *sym, os_privmod_data_t *pd)
      * FIXME: i#461 We do not tell weak/global, but return on the first we see.
      */
     ASSERT_OWN_RECURSIVE_LOCK(true, &privload_lock);
-    mod = privload_first_module();
     /* FIXME i#3850: Symbols are currently looked up following the dependency chain
      * depth-first instead of breadth-first.
      */
-    while (mod != NULL) {
+    for (privmod_t *mod = privload_first_module(); mod != NULL;
+         mod = privload_next_module(mod)) {
+        /* Skip other client modules at this point because some will not be
+         * initialised and clients should be leaves of the dependency tree and
+         * not provide symbols for other modules. Skipping just the uninitialised
+         * client modules should also work but might introduce an element of
+         * unpredictability if we are unsure in what order modules will be
+         * initialised. Skipping all uninitialised modules should also work but
+         * might hide a more serious problem. See i#4501.
+         */
+        if (mod->is_top_level_client)
+            continue;
         pd = mod->os_privmod_data;
         ASSERT(pd != NULL && name != NULL);
 
@@ -1162,7 +1179,6 @@ module_lookup_symbol(ELF_SYM_TYPE *sym, os_privmod_data_t *pd)
             }
             return res;
         }
-        mod = privload_next_module(mod);
     }
     return NULL;
 }
@@ -1448,8 +1464,8 @@ module_relocate_symbol(ELF_REL_TYPE *rel, os_privmod_data_t *pd, bool is_rela)
     const char *name;
     bool resolved;
 
-    /* XXX: we assume ELF_REL_TYPE and ELF_RELA_TYPE only differ at the end,
-     * i.e. with or without r_addend.
+    /* ELF_REL_TYPE and ELF_RELA_TYPE differ in where the addend comes from:
+     * stored in the target location, or in rel->r_addend.
      */
     if (is_rela)
         addend = ((ELF_RELA_TYPE *)rel)->r_addend;
@@ -1468,7 +1484,8 @@ module_relocate_symbol(ELF_REL_TYPE *rel, os_privmod_data_t *pd, bool is_rela)
                      ".so has relocation inside PT_DYNAMIC section");
     r_type = (uint)ELF_R_TYPE(rel->r_info);
 
-    LOG(GLOBAL, LOG_LOADER, 5, "%s: reloc @ %p type=%d\n", r_addr, r_type);
+    LOG(GLOBAL, LOG_LOADER, 5, "%s: reloc @ %p type=%d is_rela=%d addend=0x%zx\n",
+        __FUNCTION__, r_addr, r_type, is_rela, addend);
 
     /* handle the most common case, i.e. ELF_R_RELATIVE */
     if (r_type == ELF_R_RELATIVE) {
@@ -1484,7 +1501,8 @@ module_relocate_symbol(ELF_REL_TYPE *rel, os_privmod_data_t *pd, bool is_rela)
     sym = &((ELF_SYM_TYPE *)pd->os_data.dynsym)[r_sym];
     name = (char *)pd->os_data.dynstr + sym->st_name;
 
-    if (INTERNAL_OPTION(private_loader) && privload_redirect_sym(pd, r_addr, name))
+    if (INTERNAL_OPTION(private_loader) &&
+        privload_redirect_sym(pd, (ptr_uint_t *)r_addr, name))
         return;
 
     resolved = true;
@@ -1563,7 +1581,18 @@ module_relocate_symbol(ELF_REL_TYPE *rel, os_privmod_data_t *pd, bool is_rela)
 #ifndef RISCV64 /* FIXME i#3544: Check whether ELF_R_DIRECT with !is_rela is OK */
     case ELF_R_GLOB_DAT:
 #endif
-    case ELF_R_JUMP_SLOT: *r_addr = (reg_t)res + addend; break;
+    case ELF_R_JUMP_SLOT:
+        // Neither aarch64 nor x86_64 add the addend for these types, yet riscv does.
+        // This is not obvious and not well documented; we have to just behave like
+        // existing loaders behave from experimentation/examination.
+        // Yet another reason to possibly invert the private loader and let
+        // the private copy of ld.so do all the loading and relocating: i#5437.
+#if defined(AARCH64) || defined(X86)
+        *r_addr = (reg_t)res;
+#else
+        *r_addr = (reg_t)res + addend;
+#endif
+        break;
     case ELF_R_DIRECT: *r_addr = (reg_t)res + (is_rela ? addend : *r_addr); break;
     case ELF_R_COPY:
         if (sym != NULL)

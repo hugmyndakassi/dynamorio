@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2021 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2024 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -179,7 +179,7 @@ enum {
     /*  97 */ OP_sysret,    /**< IA-32/AMD64 sysret opcode. */
     /*  98 */ OP_invd,      /**< IA-32/AMD64 invd opcode. */
     /*  99 */ OP_wbinvd,    /**< IA-32/AMD64 wbinvd opcode. */
-    /* 100 */ OP_ud2a,      /**< IA-32/AMD64 ud2a opcode. */
+    /* 100 */ OP_ud2,       /**< IA-32/AMD64 ud2 opcode. */
     /* 101 */ OP_nop_modrm, /**< IA-32/AMD64 nop_modrm opcode. */
     /* 102 */ OP_movntps,   /**< IA-32/AMD64 movntps opcode. */
     /* 103 */ OP_movntpd,   /**< IA-32/AMD64 movntpd opcode. */
@@ -280,7 +280,7 @@ enum {
     /* 193 */ OP_lfs,        /**< IA-32/AMD64 lfs opcode. */
     /* 194 */ OP_lgs,        /**< IA-32/AMD64 lgs opcode. */
     /* 195 */ OP_movzx,      /**< IA-32/AMD64 movzx opcode. */
-    /* 196 */ OP_ud2b,       /**< IA-32/AMD64 ud2b opcode. */
+    /* 196 */ OP_ud1,        /**< IA-32/AMD64 ud1 opcode. */
     /* 197 */ OP_btc,        /**< IA-32/AMD64 btc opcode. */
     /* 198 */ OP_bsf,        /**< IA-32/AMD64 bsf opcode. */
     /* 199 */ OP_bsr,        /**< IA-32/AMD64 bsr opcode. */
@@ -1610,6 +1610,81 @@ enum {
     /* 1431 */ OP_vcvtneps2bf16,  /**< IA-32/AMD64 vcvtneps2bf16 opcode. */
     /* 1432 */ OP_vdpbf16ps,      /**< IA-32/AMD64 vdpbf16ps opcode. */
 
+    /* AVX512 VPOPCNTDQ */
+    /* 1433 */ OP_vpopcntd, /**< IA-32/AMD64 vpopcntd opcode. */
+    /* 1434 */ OP_vpopcntq, /**< IA-32/AMD64 vpopcntd opcode. */
+
+    /* Supervisor Mode Access Prevention (SMAP) */
+    /* 1435 */ OP_clac,      /**< IA-32/AMD64 clac opcode. */
+    /* 1436 */ OP_stac,      /**< IA-32/AMD64 stac opcode. */
+    /* 1437 */ OP_xsaves32,  /**< IA-32/AMD64 xsaves32 opcode. */
+    /* 1438 */ OP_xsaves64,  /**< IA-32/AMD64 xsaves64 opcode. */
+    /* 1439 */ OP_xrstors32, /**< IA-32/AMD64 xrstors32 opcode. */
+    /* 1440 */ OP_xrstors64, /**< IA-32/AMD64 xrstors64 opcode. */
+
+    /* TSXLDTRK */
+    /* 1441 */ OP_xsusldtrk, /**< IA-32/AMD64 xsusldtrk opcode. */
+    /* 1442 */ OP_xresldtrk, /**< IA-32/AMD64 xresldtrk opcode. */
+
+    /* SERIALIZE */
+    /* 1443 */ OP_serialize, /**< IA-32/AMD64 serialize opcode. */
+
+    /* MOVDIRI */
+    /* 1444 */ OP_movdiri, /**< IA-32/AMD64 movdiri opcode. */
+
+    /* MOVDIR64B */
+    /* 1445 */ OP_movdir64b, /**< IA-32/AMD64 movdir64b opcode. */
+
+    /* ENQCMD */
+    /* 1446 */ OP_enqcmd,  /**< IA-32/AMD64 enqcmd opcode. */
+    /* 1447 */ OP_enqcmds, /**< IA-32/AMD64 enqcmds opcode. */
+
+    /* RDPID */
+    /* 1448 */ OP_rdpid, /**< IA-32/AMD64 rdpid opcode. */
+
+    /* Not really part of CLWB but never got added earlier. */
+    /* 1449 */ OP_clflushopt, /**< IA-32/AMD64 clflushopt opcode. */
+
+    /* CLWB */
+    /* 1450 */ OP_clwb, /**< IA-32/AMD64 clwb opcode. */
+
+    /* CLDEMOTE */
+    /* 1451 */ OP_cldemote, /**< IA-32/AMD64 cldemote opcode. */
+
+    /* AVX512_BITALG */
+    /* 1452 */ OP_vpopcntb,     /**< IA-32/AMD64 vpopcntb opcode. */
+    /* 1453 */ OP_vpopcntw,     /**< IA-32/AMD64 vpopcntw opcode. */
+    /* 1454 */ OP_vpshufbitqmb, /**< IA-32/AMD64 vpshufbitqmb opcode. */
+
+    /* GFNI */
+    /* 1455 */ OP_gf2p8mulb,         /**< IA-32/AMD64 gf2p8mulb opcode. */
+    /* 1456 */ OP_gf2p8affineqb,     /**< IA-32/AMD64 gf2p8affineqb opcode. */
+    /* 1457 */ OP_gf2p8affineinvqb,  /**< IA-32/AMD64 gf2p8affineinvqb opcode. */
+    /* 1458 */ OP_vgf2p8mulb,        /**< IA-32/AMD64 vgf2p8mulb opcode. */
+    /* 1459 */ OP_vgf2p8affineqb,    /**< IA-32/AMD64 vgf2p8affineqb opcode. */
+    /* 1460 */ OP_vgf2p8affineinvqb, /**< IA-32/AMD64 vgf2p8affineinvqb opcode. */
+
+    /* Missing opcode from AVX512_VBMI */
+    /* 1461 */ OP_vpmultishiftqb, /**< IA-32/AMD64 vpmultishiftqb opcode. */
+
+    /* AVX512_VBMI2 */
+    /* 1462 */ OP_vpcompressb, /**< IA-32/AMD64 vpcompressb opcode. */
+    /* 1463 */ OP_vpcompressw, /**< IA-32/AMD64 vpcompressw opcode. */
+    /* 1464 */ OP_vpexpandb,   /**< IA-32/AMD64 vpexpandb opcode. */
+    /* 1465 */ OP_vpexpandw,   /**< IA-32/AMD64 vpexpandw opcode. */
+    /* 1466 */ OP_vpshldw,     /**< IA-32/AMD64 vpshldw opcode. */
+    /* 1467 */ OP_vpshldd,     /**< IA-32/AMD64 vpshldd opcode. */
+    /* 1468 */ OP_vpshldq,     /**< IA-32/AMD64 vpshldq opcode. */
+    /* 1469 */ OP_vpshldvw,    /**< IA-32/AMD64 vpshldvw opcode. */
+    /* 1470 */ OP_vpshldvd,    /**< IA-32/AMD64 vpshldvd opcode. */
+    /* 1471 */ OP_vpshldvq,    /**< IA-32/AMD64 vpshldvq opcode. */
+    /* 1472 */ OP_vpshrdw,     /**< IA-32/AMD64 vpshrdw opcode. */
+    /* 1473 */ OP_vpshrdd,     /**< IA-32/AMD64 vpshrdd opcode. */
+    /* 1474 */ OP_vpshrdq,     /**< IA-32/AMD64 vpshrdq opcode. */
+    /* 1475 */ OP_vpshrdvw,    /**< IA-32/AMD64 vpshrdvw opcode. */
+    /* 1476 */ OP_vpshrdvd,    /**< IA-32/AMD64 vpshrdvd opcode. */
+    /* 1477 */ OP_vpshrdvq,    /**< IA-32/AMD64 vpshrdvq opcode. */
+
     OP_AFTER_LAST,
     OP_FIRST = OP_add,           /**< First real opcode. */
     OP_LAST = OP_AFTER_LAST - 1, /**< Last real opcode. */
@@ -1691,5 +1766,9 @@ enum {
 /* undocumented opcodes */
 #define OP_icebp OP_int1
 #define OP_setalc OP_salc
+
+/* Renamed opcodes. */
+#define OP_ud2a OP_ud2 /**< Deprecated opcode name for ud2. */
+#define OP_ud2b OP_ud1 /**< Deprecated opcode name for ud1. */
 
 #endif /* _DR_IR_OPCODES_X86_H_ */

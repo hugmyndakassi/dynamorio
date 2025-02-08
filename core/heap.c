@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2022 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2024 Google, Inc.  All rights reserved.
  * Copyright (c) 2001-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -105,7 +105,8 @@ static const uint BLOCK_SIZES[] = {
     8, /* for instr bits */
 #ifndef X64
     /* for x64 future_fragment_t is 24 bytes (could be 20 if we could put flags last) */
-    sizeof(future_fragment_t), /* 12 (24 x64) */
+    ALIGN_FORWARD(sizeof(future_fragment_t), /* 12 (24 x64) */
+                  HEAP_ALIGNMENT),
 #endif
     /* we have a lot of size 16 requests for IR but they are transient */
     24, /* fcache empties and vm_area_t are now 20, vm area extras still 24 */
@@ -119,10 +120,11 @@ static const uint BLOCK_SIZES[] = {
     sizeof(instr_t), /* 112 x64 */
 #    endif
 #else
-    sizeof(fragment_t) + sizeof(direct_linkstub_t) +
-        sizeof(cbr_fallthrough_linkstub_t), /* 60 dbg / 56 rel */
+    ALIGN_FORWARD(sizeof(fragment_t) + sizeof(direct_linkstub_t) +
+                      sizeof(cbr_fallthrough_linkstub_t), /* 60 dbg / 56 rel */
+                  HEAP_ALIGNMENT),
 #    ifndef DEBUG
-    sizeof(instr_t),                        /* 72 */
+    sizeof(instr_t), /* 72 */
 #    endif
 #endif
     /* we keep this bucket even though only 10% or so of normal bbs
@@ -156,11 +158,21 @@ DECLARE_NEVERPROT_VAR(static int block_peak_align_pad[BLOCK_TYPES], { 0 });
 DECLARE_NEVERPROT_VAR(static bool out_of_vmheap_once, false);
 #endif
 
-/* variable-length: we steal one int for the size */
-#define HEADER_SIZE (sizeof(size_t))
+/* The size of a variable-size allocation is stored as a size_t in the header.
+ * On 32-bit ARM, HEAP_ALIGNMENT is twice the size of a size_t but the wasted
+ * space for DR's own use is not expected to be significant as only allocs
+ * that do not fit in the buckets use headers. Client heap allocations
+ * probably bear the biggest hit.
+ */
+#define HEADER_SIZE HEAP_ALIGNMENT
 /* VARIABLE_SIZE is assignable */
 #define VARIABLE_SIZE(p) (*(size_t *)((p)-HEADER_SIZE))
-#define MEMSET_HEADER(p, value) VARIABLE_SIZE(p) = HEAP_TO_PTR_UINT(value)
+#define MEMSET_HEADER(p, value)                                             \
+    do {                                                                    \
+        ASSERT(HEADER_SIZE % sizeof(VARIABLE_SIZE(p)) == 0);                \
+        for (size_t k = 0; k < HEADER_SIZE / sizeof(VARIABLE_SIZE(p)); k++) \
+            (&VARIABLE_SIZE(p))[k] = HEAP_TO_PTR_UINT(value);               \
+    } while (0)
 #define GET_VARIABLE_ALLOCATION_SIZE(p) (VARIABLE_SIZE(p) + HEADER_SIZE)
 
 /* The heap is allocated in units.
@@ -537,7 +549,8 @@ request_region_be_heap_reachable(byte *start, size_t size)
 }
 
 void
-vmcode_get_reachable_region(byte **region_start OUT, byte **region_end OUT)
+vmcode_get_reachable_region(byte **region_start DR_PARAM_OUT,
+                            byte **region_end DR_PARAM_OUT)
 {
     /* We track sub-page for more accuracy on additional constraints, and
      * align when asked about it.
@@ -781,10 +794,12 @@ report_w_xor_x_fatal_error_and_exit(void)
 }
 
 static void
-vmm_place_vmcode(vm_heap_t *vmh, size_t size, heap_error_code_t *error_code)
+vmm_place_vmcode(vm_heap_t *vmh, /*INOUT*/ size_t *size, heap_error_code_t *error_code)
 {
     ptr_uint_t preferred = 0;
 #ifdef X64
+    LOG(GLOBAL, LOG_HEAP, 1, "%s: vm heap allowed range " PFX "-" PFX "\n", __FUNCTION__,
+        heap_allowable_region_start, heap_allowable_region_end);
     /* -heap_in_lower_4GB takes top priority and has already set heap_allowable_region_*.
      * Next comes -vm_base_near_app.  It will fail for -vm_size=2G, which we document.
      */
@@ -817,7 +832,7 @@ vmm_place_vmcode(vm_heap_t *vmh, size_t size, heap_error_code_t *error_code)
                 }
                 vmh->alloc_start = os_heap_reserve_in_region(
                     (void *)ALIGN_FORWARD(reach_base, PAGE_SIZE),
-                    (void *)ALIGN_BACKWARD(reach_end, PAGE_SIZE), size + add_for_align,
+                    (void *)ALIGN_BACKWARD(reach_end, PAGE_SIZE), *size + add_for_align,
                     error_code, true /*+x*/);
                 if (vmh->alloc_start != NULL) {
                     vmh->start_addr = (heap_pc)ALIGN_FORWARD(
@@ -837,24 +852,28 @@ vmm_place_vmcode(vm_heap_t *vmh, size_t size, heap_error_code_t *error_code)
 
     /* Next we try the -vm_base value plus a random offset. */
     if (vmh->start_addr == NULL) {
-        /* Out of 32 bits = 12 bits are page offset, windows wastes 4 more
-         * since its allocation base is 64KB, and if we want to stay
-         * safely in say 0x20000000-0x2fffffff we're left with only 12
-         * bits of randomness - which may be too little.  On the other
-         * hand changing any of the lower 16 bits will make our bugs
-         * non-deterministic. */
-        /* Make sure we don't waste the lower bits from our random number */
-        preferred = (DYNAMO_OPTION(vm_base) +
-                     get_random_offset(DYNAMO_OPTION(vm_max_offset) /
-                                       DYNAMO_OPTION(vmm_block_size)) *
-                         DYNAMO_OPTION(vmm_block_size));
-        preferred = ALIGN_FORWARD(preferred, OS_ALLOC_GRANULARITY);
-        /* overflow check: w/ vm_base shouldn't happen so debug-only check */
-        ASSERT(!POINTER_OVERFLOW_ON_ADD(preferred, size));
+        if (DYNAMO_OPTION(vm_base) == 0) {
+            /* Let the OS pick where. */
+        } else {
+            /* Out of 32 bits = 12 bits are page offset, windows wastes 4 more
+             * since its allocation base is 64KB, and if we want to stay
+             * safely in say 0x20000000-0x2fffffff we're left with only 12
+             * bits of randomness - which may be too little.  On the other
+             * hand changing any of the lower 16 bits will make our bugs
+             * non-deterministic. */
+            /* Make sure we don't waste the lower bits from our random number */
+            preferred = (DYNAMO_OPTION(vm_base) +
+                         get_random_offset(DYNAMO_OPTION(vm_max_offset) /
+                                           DYNAMO_OPTION(vmm_block_size)) *
+                             DYNAMO_OPTION(vmm_block_size));
+            preferred = ALIGN_FORWARD(preferred, OS_ALLOC_GRANULARITY);
+            /* overflow check: w/ vm_base shouldn't happen so debug-only check */
+            ASSERT(!POINTER_OVERFLOW_ON_ADD(preferred, *size));
+        }
         /* let's assume a single chunk is sufficient to reserve */
 #ifdef X64
         if ((byte *)preferred < heap_allowable_region_start ||
-            (byte *)preferred + size > heap_allowable_region_end) {
+            (byte *)preferred + *size > heap_allowable_region_end) {
             *error_code = HEAP_ERROR_NOT_AT_PREFERRED;
             LOG(GLOBAL, LOG_HEAP, 1,
                 "vmm_heap_unit_init preferred=" PFX " too far from " PFX "-" PFX "\n",
@@ -862,11 +881,12 @@ vmm_place_vmcode(vm_heap_t *vmh, size_t size, heap_error_code_t *error_code)
         } else {
 #endif
             vmh->alloc_start =
-                os_heap_reserve((void *)preferred, size, error_code, true /*+x*/);
+                os_heap_reserve((void *)preferred, *size, error_code, true /*+x*/);
             vmh->start_addr = vmh->alloc_start;
             LOG(GLOBAL, LOG_HEAP, 1,
-                "vmm_heap_unit_init preferred=" PFX " got start_addr=" PFX "\n",
-                preferred, vmh->start_addr);
+                "vmm_heap_unit_init preferred=" PFX " size=" PIFX " => start_addr=" PFX
+                " (code=0x%08x)\n",
+                preferred, *size, vmh->start_addr, *error_code);
 #ifdef X64
         }
 #endif
@@ -876,29 +896,30 @@ vmm_place_vmcode(vm_heap_t *vmh, size_t size, heap_error_code_t *error_code)
          * syslog or assert here
          */
         /* need extra size to ensure alignment */
-        vmh->alloc_size = size + DYNAMO_OPTION(vmm_block_size);
+        vmh->alloc_size = *size + DYNAMO_OPTION(vmm_block_size);
 #ifdef X64
         /* PR 215395, make sure allocation satisfies heap reachability contraints */
         vmh->alloc_start = os_heap_reserve_in_region(
             (void *)ALIGN_FORWARD(heap_allowable_region_start, PAGE_SIZE),
             (void *)ALIGN_BACKWARD(heap_allowable_region_end, PAGE_SIZE),
-            size + DYNAMO_OPTION(vmm_block_size), error_code, true /*+x*/);
+            *size + DYNAMO_OPTION(vmm_block_size), error_code, true /*+x*/);
 #else
         vmh->alloc_start = (heap_pc)os_heap_reserve(
-            NULL, size + DYNAMO_OPTION(vmm_block_size), error_code, true /*+x*/);
+            NULL, *size + DYNAMO_OPTION(vmm_block_size), error_code, true /*+x*/);
 #endif
         vmh->start_addr =
             (heap_pc)ALIGN_FORWARD(vmh->alloc_start, DYNAMO_OPTION(vmm_block_size));
         LOG(GLOBAL, LOG_HEAP, 1,
             "vmm_heap_unit_init unable to allocate at preferred=" PFX
             " letting OS place sz=%dM addr=" PFX "\n",
-            preferred, size / (1024 * 1024), vmh->start_addr);
+            preferred, *size / (1024 * 1024), vmh->start_addr);
         if (vmh->alloc_start == NULL && DYNAMO_OPTION(vm_allow_smaller)) {
             /* Just a little smaller might fit */
             size_t sub = (size_t)ALIGN_FORWARD(size / 16, 1024 * 1024);
             SYSLOG_INTERNAL_WARNING_ONCE("Full size vmm heap allocation failed");
-            if (size > sub)
-                size -= sub;
+            /* Don't go too small. */
+            if (*size > 2 * sub)
+                *size -= sub;
             else
                 break;
         } else
@@ -912,7 +933,7 @@ vmm_place_vmcode(vm_heap_t *vmh, size_t size, heap_error_code_t *error_code)
          * on top.  TODO i#3566: We need a different strategy on Windows.
          */
         /* Ensure os_map_file ignores vmcode: */
-        ASSERT(!is_vmm_reserved_address(vmh->start_addr, size, NULL, NULL));
+        ASSERT(!is_vmm_reserved_address(vmh->start_addr, *size, NULL, NULL));
         size_t map_size = vmh->alloc_size;
         byte *map_base =
             os_map_file(heapmgt->dual_map_file, &map_size, 0, vmh->alloc_start,
@@ -925,9 +946,9 @@ vmm_place_vmcode(vm_heap_t *vmh, size_t size, heap_error_code_t *error_code)
     /* ensure future out-of-block heap allocations are reachable from this allocation */
     if (vmh->start_addr != NULL) {
         ASSERT(vmh->start_addr >= heap_allowable_region_start &&
-               !POINTER_OVERFLOW_ON_ADD(vmh->start_addr, size) &&
-               vmh->start_addr + size <= heap_allowable_region_end);
-        request_region_be_heap_reachable(vmh->start_addr, size);
+               !POINTER_OVERFLOW_ON_ADD(vmh->start_addr, *size) &&
+               vmh->start_addr + *size <= heap_allowable_region_end);
+        request_region_be_heap_reachable(vmh->start_addr, *size);
     }
 #endif
     ASSERT(ALIGNED(vmh->start_addr, DYNAMO_OPTION(vmm_block_size)));
@@ -976,7 +997,7 @@ vmm_heap_unit_init(vm_heap_t *vmh, size_t size, bool is_vmcode, const char *name
                 ASSERT_NOT_REACHED();
             }
         }
-        vmm_place_vmcode(vmh, size, &error_code);
+        vmm_place_vmcode(vmh, &size, &error_code);
         if (DYNAMO_OPTION(satisfy_w_xor_x)) {
             size_t map_size = vmh->alloc_size;
             heapmgt->vmcode_writable_alloc =
@@ -1114,8 +1135,8 @@ vmm_is_reserved_unit(vm_heap_t *vmh, vm_addr_t p, size_t size)
 }
 
 static inline bool
-is_vmh_reserved_address(vm_heap_t *vmh, byte *pc, size_t size, OUT byte **region_start,
-                        OUT byte **region_end)
+is_vmh_reserved_address(vm_heap_t *vmh, byte *pc, size_t size,
+                        DR_PARAM_OUT byte **region_start, DR_PARAM_OUT byte **region_end)
 {
     /* Case 10293: we don't call vmm_is_reserved_unit to avoid its
      * assert, which we want to maintain for callers only dealing with
@@ -1138,8 +1159,8 @@ is_vmh_reserved_address(vm_heap_t *vmh, byte *pc, size_t size, OUT byte **region
  * Does not consider memory we allocate once we run out of our original reservations.
  */
 bool
-is_vmm_reserved_address(byte *pc, size_t size, OUT byte **region_start,
-                        OUT byte **region_end)
+is_vmm_reserved_address(byte *pc, size_t size, DR_PARAM_OUT byte **region_start,
+                        DR_PARAM_OUT byte **region_end)
 {
     ASSERT(heapmgt != NULL);
     if (heapmgt->vmheap.start_addr != NULL &&
@@ -1232,7 +1253,7 @@ vmm_get_writable_addr(byte *exec_addr, which_vmm_t which)
 
 /* The caller must first ensure this is a vmcode address.  Returns p_writable. */
 static inline vm_addr_t
-vmm_normalize_addr(vm_heap_t *vmh, INOUT vm_addr_t *p_exec)
+vmm_normalize_addr(vm_heap_t *vmh, DR_PARAM_INOUT vm_addr_t *p_exec)
 {
     vm_addr_t p = *p_exec;
     if (p < vmh->start_addr || p >= vmh->end_addr) {
@@ -3298,7 +3319,7 @@ is_stack_overflow(dcontext_t *dcontext, byte *sp)
 }
 
 byte *
-d_r_map_file(file_t f, size_t *size INOUT, uint64 offs, app_pc addr, uint prot,
+d_r_map_file(file_t f, size_t *size DR_PARAM_INOUT, uint64 offs, app_pc addr, uint prot,
              map_flags_t map_flags)
 {
     byte *view;
@@ -3554,7 +3575,9 @@ global_heap_alloc(size_t size HEAPACCT(which_heap_t which))
     if (heapmgt == &temp_heapmgt &&
         /* We prevent recrusion by checking for a field that heap_init writes. */
         !heapmgt->global_heap_writable) {
-        /* XXX: We have no control point to call standalone_exit(). */
+        /* TODO i#2499: We have no control point currently to call standalone_exit().
+         * We need to develop a solution with atexit() or ELF destructors or sthg.
+         */
         standalone_init();
     }
     p = common_global_heap_alloc(&heapmgt->global_units, size HEAPACCT(which));

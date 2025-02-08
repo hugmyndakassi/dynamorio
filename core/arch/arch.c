@@ -112,7 +112,7 @@ reg_spill_tls_offs(reg_id_t reg)
     case SCRATCH_REG1: return TLS_REG1_SLOT;
     case SCRATCH_REG2: return TLS_REG2_SLOT;
     case SCRATCH_REG3: return TLS_REG3_SLOT;
-#ifdef AARCHXX
+#if defined(AARCHXX) || defined(RISCV64)
     case SCRATCH_REG4: return TLS_REG4_SLOT;
     case SCRATCH_REG5:
         return TLS_REG5_SLOT;
@@ -426,8 +426,9 @@ shared_gencode_emit(generated_code_t *gencode _IF_X86_64(bool x86_mode))
     gencode->do_syscall = pc;
     pc = emit_do_syscall(GLOBAL_DCONTEXT, gencode, pc, gencode->fcache_return,
                          true /*shared*/, 0, &gencode->do_syscall_offs);
-#    ifdef AARCHXX
-    /* ARM has no thread-private gencode, so our clone syscall is shared */
+#    if defined(AARCHXX) || defined(RISCV64)
+    /* ARM/AArch64/RISC-V has no thread-private gencode, so our clone syscall is shared.
+     */
     gencode->do_clone_syscall = pc;
     pc = emit_do_clone_syscall(GLOBAL_DCONTEXT, gencode, pc, gencode->fcache_return,
                                true /*shared*/, &gencode->do_clone_syscall_offs);
@@ -726,7 +727,10 @@ d_r_arch_init(void)
 
 #ifdef AARCHXX
     dr_reg_stolen = DR_REG_R0 + DYNAMO_OPTION(steal_reg);
-    ASSERT(dr_reg_stolen >= DR_REG_STOLEN_MIN && dr_reg_stolen <= DR_REG_STOLEN_MAX)
+    ASSERT(dr_reg_stolen >= DR_REG_STOLEN_MIN && dr_reg_stolen <= DR_REG_STOLEN_MAX);
+#elif defined(RISCV64)
+    dr_reg_stolen = DR_REG_X0 + DYNAMO_OPTION(steal_reg);
+    ASSERT(dr_reg_stolen >= DR_REG_STOLEN_MIN && dr_reg_stolen <= DR_REG_STOLEN_MAX);
 #endif
 
     /* Ensure we have no unexpected padding inside structs that include
@@ -735,10 +739,13 @@ d_r_arch_init(void)
                   offsetof(priv_mcontext_t, simd)));
     ASSERT(offsetof(app_state_at_intercept_t, mc) ==
            offsetof(app_state_at_intercept_t, start_pc) + sizeof(void *));
-    /* Try to catch errors in x86.asm offsets for dcontext_t */
+    /* Try to catch errors in x86.asm offsets for dcontext_t.
+     * XXX i#7226: Use asm_offsetsx.h for systematic offset checks like on aarchxx.
+     */
     ASSERT(sizeof(unprotected_context_t) ==
-           sizeof(priv_mcontext_t) + IF_WINDOWS_ELSE(IF_X64_ELSE(8, 4), 8) +
-               5 * sizeof(reg_t));
+           ALIGN_FORWARD(sizeof(priv_mcontext_t) + IF_WINDOWS_ELSE(IF_X64_ELSE(8, 4), 8) +
+                             5 * sizeof(reg_t),
+                         __alignof(unprotected_context_t)));
 
     interp_init();
 
@@ -801,6 +808,10 @@ d_r_arch_init(void)
         }
 #endif
     }
+
+    /* Ensure addressing registers fit into base+disp operand base and index fields. */
+    IF_AARCHXX(ASSERT_BITFIELD_TRUNCATE(REG_SPECIFIER_BITS, DR_REG_MAX_ADDRESSING_REG));
+
     mangle_init();
 }
 
@@ -910,7 +921,8 @@ arch_profile_exit()
 #endif /* WINDOWS_PC_SAMPLE */
 
 /* arch-specific atexit cleanup */
-void d_r_arch_exit(IF_WINDOWS_ELSE_NP(bool detach_stacked_callbacks, void))
+void
+d_r_arch_exit(IF_WINDOWS_ELSE_NP(bool detach_stacked_callbacks, void))
 {
     /* we only need to unprotect shared_code for profile extraction
      * so we do it there to also cover the fast exit path
@@ -1201,7 +1213,7 @@ arch_thread_init(dcontext_t *dcontext)
     return;
 #endif
 
-#ifdef AARCHXX
+#if defined(AARCHXX) || defined(RISCV64)
     /* Store addresses we access via TLS from exit stubs and gencode. */
     get_local_state_extended()->spill_space.fcache_return =
         PC_AS_JMP_TGT(isa_mode, fcache_return_shared_routine());
@@ -1980,7 +1992,8 @@ fcache_return_routine_ex(dcontext_t *dcontext _IF_X86_64(gencode_mode_t mode))
     return (cache_pc)code->fcache_return;
 }
 
-cache_pc fcache_return_coarse_routine(IF_X86_64_ELSE(gencode_mode_t mode, void))
+cache_pc
+fcache_return_coarse_routine(IF_X86_64_ELSE(gencode_mode_t mode, void))
 {
     generated_code_t *code = get_shared_gencode(GLOBAL_DCONTEXT _IF_X86_64(mode));
     ASSERT(DYNAMO_OPTION(coarse_units));
@@ -1990,7 +2003,8 @@ cache_pc fcache_return_coarse_routine(IF_X86_64_ELSE(gencode_mode_t mode, void))
         return (cache_pc)code->fcache_return_coarse;
 }
 
-cache_pc trace_head_return_coarse_routine(IF_X86_64_ELSE(gencode_mode_t mode, void))
+cache_pc
+trace_head_return_coarse_routine(IF_X86_64_ELSE(gencode_mode_t mode, void))
 {
     generated_code_t *code = get_shared_gencode(GLOBAL_DCONTEXT _IF_X86_64(mode));
     ASSERT(DYNAMO_OPTION(coarse_units));
@@ -2765,7 +2779,8 @@ fcache_enter_shared_routine(dcontext_t *dcontext)
         SHARED_GENCODE_MATCH_THREAD(dcontext)->fcache_enter);
 }
 
-cache_pc fcache_return_shared_routine(IF_X86_64_ELSE(gencode_mode_t mode, void))
+cache_pc
+fcache_return_shared_routine(IF_X86_64_ELSE(gencode_mode_t mode, void))
 {
     generated_code_t *code = get_shared_gencode(GLOBAL_DCONTEXT _IF_X86_64(mode));
     ASSERT(USE_SHARED_GENCODE());
@@ -2776,7 +2791,8 @@ cache_pc fcache_return_shared_routine(IF_X86_64_ELSE(gencode_mode_t mode, void))
 }
 
 #ifdef TRACE_HEAD_CACHE_INCR
-cache_pc trace_head_incr_shared_routine(IF_X86_64_ELSE(gencode_mode_t mode, void))
+cache_pc
+trace_head_incr_shared_routine(IF_X86_64_ELSE(gencode_mode_t mode, void))
 {
     generated_code_t *code = get_shared_gencode(GLOBAL_DCONTEXT _IF_X86_64(mode));
     ASSERT(USE_SHARED_GENCODE());
@@ -3096,14 +3112,11 @@ hook_vsyscall_return:
     instr_free(dcontext, &instr);
     return res;
 #        undef CHECK
-#    elif defined(AARCHXX)
-    /* No vsyscall support needed for our ARM targets -- still called on
+#    elif defined(AARCHXX) || defined(RISCV64)
+    /* No vsyscall support needed for our ARM/AArch64/RISC-V targets -- still called on
      * os_process_under_dynamorio().
      */
     ASSERT(!method_changing);
-    return false;
-#    elif defined(RISCV64)
-    ASSERT_NOT_IMPLEMENTED(false);
     return false;
 #    endif /* X86/ARM/RISCV64 */
 }
@@ -3143,11 +3156,8 @@ unhook_vsyscall(void)
         ASSERT(res);
     }
     return true;
-#    elif defined(AARCHXX)
+#    elif defined(AARCHXX) || defined(RISCV64)
     ASSERT_NOT_IMPLEMENTED(get_syscall_method() != SYSCALL_METHOD_SYSENTER);
-    return false;
-#    elif defined(RISCV64)
-    ASSERT_NOT_IMPLEMENTED(false);
     return false;
 #    endif /* X86/ARM/RISCV64 */
 }
@@ -3541,6 +3551,18 @@ priv_mcontext_to_dr_mcontext(dr_mcontext_t *dst, priv_mcontext_t *src)
      */
     if (dst->size > sizeof(dr_mcontext_t))
         return false;
+#if defined(AARCH64)
+    /* We could support binary compatibility for clients built before the
+     * addition of AArch64's SVE support, by evaluating the machine context's
+     * user set-size field. But currently do not, preferring to detect
+     * incompatibility and asserting or returning false.
+     */
+    if (TEST(DR_MC_MULTIMEDIA, dst->flags) && dst->size != sizeof(dr_mcontext_t)) {
+        CLIENT_ASSERT(
+            false, "A pre-SVE client is running on an Arm AArch64 SVE DynamoRIO build!");
+        return false;
+    }
+#endif
     if (TESTALL(DR_MC_ALL, dst->flags) && dst->size == sizeof(dr_mcontext_t)) {
         *(priv_mcontext_t *)(&MCXT_FIRST_REG_FIELD(dst)) = *src;
     } else {
@@ -3624,7 +3646,7 @@ priv_mcontext_to_dr_mcontext(dr_mcontext_t *dst, priv_mcontext_t *src)
                     return false;
                 memcpy(&dst->opmask, &src->opmask, sizeof(dst->opmask));
             }
-#else
+#elif defined(AARCHXX)
             /* FIXME i#1551: NYI on ARM */
             ASSERT_NOT_IMPLEMENTED(false);
 #endif
@@ -3806,15 +3828,50 @@ dump_mcontext(priv_mcontext_t *context, file_t f, bool dump_xml)
     }
 #elif defined(AARCHXX)
     {
-        int i, j;
+#    ifdef AARCH64
+        const uint vector_length_bytes =
+            (proc_has_feature(FEATURE_SVE) ? proc_get_vector_length_bytes()
+                                           : opnd_size_in_bytes(reg_get_size(DR_REG_Q0)));
+        const uint u32_count = vector_length_bytes / sizeof(uint);
         /* XXX: should be proc_num_simd_saved(). */
-        for (i = 0; i < proc_num_simd_registers(); i++) {
-            print_file(f, dump_xml ? "\t\tqd= \"0x" : "\tq%-3d= 0x", i);
-            for (j = 0; j < 4; j++) {
+        const uint num_simd_regs = MCXT_NUM_SIMD_SVE_SLOTS;
+        const char *reg_prefix = proc_has_feature(FEATURE_SVE) ? "z" : "q";
+#    else
+        const uint u32_count =
+            sizeof(context->simd[0].u32) / sizeof(context->simd[0].u32[0]);
+        /* XXX: should be proc_num_simd_saved(). */
+        const uint num_simd_regs = proc_num_simd_registers();
+        const char *reg_prefix = "q";
+#    endif
+        ASSERT(u32_count <=
+               sizeof(context->simd[0].u32) / sizeof(context->simd[0].u32[0]));
+        for (uint i = 0; i < num_simd_regs; i++) {
+            print_file(f, dump_xml ? "\t\t%s%d= \"0x" : "\t%s%-3d= 0x", reg_prefix, i);
+            for (uint j = 0; j < u32_count; j++) {
                 print_file(f, "%08x ", context->simd[i].u32[j]);
             }
             print_file(f, dump_xml ? "\"\n" : "\n");
         }
+#    ifdef AARCH64
+        if (proc_has_feature(FEATURE_SVE)) {
+            /* Dump SVE P registers */
+            const uint pred_u16_count =
+                (proc_get_vector_length_bytes() / 8) / sizeof(ushort);
+            for (uint i = 0; i < MCXT_NUM_SVEP_SLOTS; i++) {
+                print_file(f, dump_xml ? "\t\tp%d= \"0x" : "\tp%-3d= 0x", i);
+                for (size_t j = 0; j < pred_u16_count; j++) {
+                    print_file(f, "%04x ", context->svep[i].u16[j]);
+                }
+                print_file(f, dump_xml ? "\"\n" : "\n");
+            }
+            /* Dump SVE FFR register */
+            print_file(f, dump_xml ? "\t\tffr= \"0x" : "\tffr = 0x");
+            for (size_t j = 0; j < pred_u16_count; j++) {
+                print_file(f, "%04x ", context->ffr.u16[j]);
+            }
+            print_file(f, dump_xml ? "\"\n" : "\n");
+        }
+#    endif
     }
 #endif
 
@@ -3829,7 +3886,7 @@ dump_mcontext(priv_mcontext_t *context, file_t f, bool dump_xml)
 #endif
 }
 
-#ifdef AARCHXX
+#if defined(AARCHXX) || defined(RISCV64)
 reg_t
 get_stolen_reg_val(priv_mcontext_t *mc)
 {
@@ -3841,6 +3898,19 @@ set_stolen_reg_val(priv_mcontext_t *mc, reg_t newval)
 {
     *(reg_t *)(((byte *)mc) + opnd_get_reg_dcontext_offs(dr_reg_stolen)) = newval;
 }
+
+#    ifdef RISCV64
+reg_t
+get_tp_reg_val(priv_mcontext_t *mc)
+{
+    return *(reg_t *)(((byte *)mc) + opnd_get_reg_dcontext_offs(DR_REG_TP));
+}
+void
+set_tp_reg_val(priv_mcontext_t *mc, reg_t newval)
+{
+    *(reg_t *)(((byte *)mc) + opnd_get_reg_dcontext_offs(DR_REG_TP)) = newval;
+}
+#    endif
 #endif
 
 #ifdef PROFILE_RDTSC
@@ -3866,7 +3936,7 @@ get_time()
 bool
 is_ibl_routine_type(dcontext_t *dcontext, cache_pc target, ibl_branch_type_t branch_type)
 {
-    ibl_type_t ibl_type;
+    ibl_type_t ibl_type = { 0 };
     DEBUG_DECLARE(bool is_ibl =)
     get_ibl_routine_type_ex(dcontext, target, &ibl_type _IF_X86_64(NULL));
     ASSERT(is_ibl);
