@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2010-2023 Google, Inc.    All rights reserved.
+# Copyright (c) 2010-2025 Google, Inc.    All rights reserved.
 # Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # Copyright (c) 2018 Arm Limited          All rights reserved.
 # **********************************************************
@@ -47,6 +47,8 @@
 
 # Visual Studio 2017 requires 3.7.
 cmake_minimum_required(VERSION 3.7)
+
+message(STATUS "CMake version ${CMAKE_VERSION}")
 
 include(make/policies.cmake NO_POLICY_SCOPE)
 
@@ -120,6 +122,7 @@ endif ()
 
 include(CheckCCompilerFlag)
 include(CheckCXXCompilerFlag)
+include(CheckIncludeFile)
 
 ###########################################################################
 # utility functions
@@ -186,6 +189,27 @@ if (APPLE)
   set(OLDEST_OSX_SUPPPORTED "11.7")
 elseif (UNIX)
   set(LINUX 1)
+
+  # Identify whether building with (and targeting) musl libc with ldd. This
+  # assumes a native build. For cross compiling, a musl build could be forced
+  # by DR_TARGET_MUSL.
+  find_program(LDD ldd DOC "util for examing shared object dependency")
+  if (NOT LDD)
+    message(STATUS "Unable to find ldd: assume glibc")
+  else ()
+    execute_process(COMMAND ${LDD}
+      RESULT_VARIABLE ldd_result
+      ERROR_VARIABLE ldd_err
+      OUTPUT_VARIABLE ldd_out)
+      if (ldd_err MATCHES "^musl libc")
+        set(MUSL 1)
+      endif ()
+  endif ()
+
+  option(DR_TARGET_MUSL "Target musl libc" OFF)
+  if (DR_TARGET_MUSL)
+    set(MUSL 1)
+  endif ()
 endif (APPLE)
 if (WIN32)
   set(WINDOWS 1)
@@ -223,10 +247,16 @@ if (TARGET_ARCH MATCHES "^arm64" OR TARGET_ARCH MATCHES "^aarch64")
   set(AARCH64 1)
   set(X64 1)
   message(STATUS "Building for AArch64")
+  if (ANDROID)
+    set(ANDROID64 1)
+  endif ()
 elseif (TARGET_ARCH MATCHES "^arm")
   set(ARM 1) # This means AArch32.
   set(X64 OFF)
   message(STATUS "Building for ARM")
+  if (ANDROID)
+    set(ANDROID32 1)
+  endif ()
 elseif (TARGET_ARCH MATCHES "^riscv64")
   set(RISCV64 1)
   set(X64 1)
@@ -317,6 +347,13 @@ if (NOT "${TARGET_ARCH}" STREQUAL "${CMAKE_SYSTEM_PROCESSOR}")
     # TODO #1684: We don't have full support for targeting RISC-V in i386 yet.
     message(FATAL_ERROR "Targeting riscv64 on i386 is not yet supported.")
   endif ()
+endif ()
+
+get_processor_vendor(CPU_VENDOR)
+if ("${CPU_VENDOR}" STREQUAL "GenuineIntel")
+  set(CPU_INTEL ON)
+elseif ("${CPU_VENDOR}" STREQUAL "AuthenticAMD")
+  set(CPU_AMD ON)
 endif ()
 
 # Support for running cross-compiled tests under emulation.
@@ -567,7 +604,7 @@ endif (EXISTS "${PROJECT_SOURCE_DIR}/.svn")
 
 # N.B.: When updating this, update all the default versions in ci-package.yml
 # and ci-docs.yml.  We should find a way to share (xref i#1565).
-set(VERSION_NUMBER_DEFAULT "9.90.${VERSION_NUMBER_PATCHLEVEL}")
+set(VERSION_NUMBER_DEFAULT "11.90.${VERSION_NUMBER_PATCHLEVEL}")
 # do not store the default VERSION_NUMBER in the cache to prevent a stale one
 # from preventing future version updates in a pre-existing build dir
 set(VERSION_NUMBER "" CACHE STRING "Version number: leave empty for default")
@@ -620,6 +657,20 @@ if (X86 AND UNIX)
   check_avx512_processor_and_compiler_support(proc_supports_avx512)
 endif ()
 
+set(proc_supports_sve OFF)
+set(proc_supports_sve2 OFF)
+set(proc_supports_pauth OFF)
+if (AARCH64 AND UNIX)
+  set(CFLAGS_SVE "-march=armv8-a+sve")
+  set(CFLAGS_SVE2 "-march=armv8-a+sve2")
+  set(CFLAGS_PAUTH "-march=armv8.3-a -mbranch-protection=standard")
+  set(ASMFLAGS_SVE "-march=armv8-a+sve")
+  set(ASMFLAGS_SVE2 "-march=armv8-a+sve2")
+  check_sve_processor_and_compiler_support(proc_supports_sve proc_sve_vl)
+  check_sve2_processor_and_compiler_support(proc_supports_sve2)
+  check_pauth_processor_and_compiler_support(proc_supports_pauth)
+endif ()
+
 # Ensure that _AMD64_ or _X86_ are defined on Microsoft Windows, as otherwise
 # um/winnt.h provided since Windows 10.0.22000 will error.
 if (NOT UNIX)
@@ -649,11 +700,9 @@ set(cpp2asm_newline_script_path "${PROJECT_SOURCE_DIR}/make/CMake_asm.cmake")
 include(make/cpp2asm_support.cmake)
 if (UNIX)
   # We require gas >= 2.18.50 for --32, --64, and the new -msyntax=intel, etc.
-  # Since this is pretty recent we include a copy (built vs as old a glibc
-  # as was convenient)
   if (NOT CMAKE_ASM_SUPPORTS_INTEL_SYNTAX)
-    message("${CMAKE_ASM_COMPILER} too old: using ${PROJECT_SOURCE_DIR}/make/as-2.18.50")
-    set(CMAKE_ASM_COMPILER "${PROJECT_SOURCE_DIR}/make/as-2.18.50")
+    message(FATAL_ERROR
+      "${CMAKE_ASM_COMPILER} is too old and does not support -msyntax=intel")
   endif (NOT CMAKE_ASM_SUPPORTS_INTEL_SYNTAX)
 endif (UNIX)
 
@@ -672,6 +721,7 @@ if (UNIX)
   endif (NOT CMAKE_COMPILER_IS_GNUCC)
 
   check_if_linker_is_gnu_gold(LINKER_IS_GNU_GOLD)
+  check_if_linker_is_llvm_lld(LINKER_IS_LLVM_LLD)
 
   # FIXME i#2949: static 32-bit release-build linking with gcc 7.3.1 fails when
   # static C++ clients like drmemtrace or drmemtrace_raw2trace are linked in.
@@ -801,6 +851,7 @@ if (UNIX)
   # (see i#1034 where this caused problems in the past).
   set(BASE_CFLAGS "${BASE_CFLAGS} -funsigned-char")
   # Ubuntu defaults to -fstack-protector these days, which depends on app TLS.
+  CHECK_C_COMPILER_FLAG("-no-pie" no_pie_avail)
   CHECK_C_COMPILER_FLAG("-fno-stack-protector" no_stack_protector_avail)
   if (no_stack_protector_avail)
     set(BASE_CFLAGS "${BASE_CFLAGS} -fno-stack-protector")
@@ -855,14 +906,14 @@ if (UNIX)
   endif ()
   # there's no cmake warning control so we hardcode it
   set(WARN "-Wall -Werror -Wwrite-strings -Wvla")
+  CHECK_C_COMPILER_FLAG("-Wno-unused-but-set-variable" nounused_avail)
+  if (nounused_avail)
+    set(WARN "${WARN} -Wno-unused-but-set-variable")
+  endif (nounused_avail)
   if (NOT CMAKE_COMPILER_IS_CLANG)
     # Old gcc's ignore unknown -W flags, but -Wall -Werror causes clang to
     # complain that it doesn't recognize it.
     # Actually this is not true: gcc 4.1.2 aborts on unknown -W so we check
-    CHECK_C_COMPILER_FLAG("-Wno-unused-but-set-variable" nounused_avail)
-    if (nounused_avail)
-      set(WARN "${WARN} -Wno-unused-but-set-variable")
-    endif (nounused_avail)
     # XXX i#3792: DynamoRIO manages '\0' termination and error states itself in
     # too many places. In order to activate this warning, this code needs to get
     # re-factored for no good reason.
@@ -881,7 +932,28 @@ if (UNIX)
       set(WARN "${WARN} -Wno-stringop-overflow")
     endif (stringop_overflow_avail)
     CHECK_C_COMPILER_FLAG("-Wtype-limits" HAVE_TYPELIMITS_CONTROL)
+    CHECK_C_COMPILER_FLAG("-Wdangling-pointer" dangling_pointer_avail)
+    if (dangling_pointer_avail)
+      # XXX i#6337: It is difficult to rewrite the TRY macros to avoid this gcc
+      # warning, which is innocuous, so we disable.
+      set(WARN "${WARN} -Wno-dangling-pointer")
+    endif ()
   else (NOT CMAKE_COMPILER_IS_CLANG)
+    # Clang emits this warning when a function is used without a defined
+    # prototype, however clang can't find function prototpes in #define macros.
+    # If function prototypes are moved out of #define macros then this warning
+    # can be re-enabled.
+    CHECK_C_COMPILER_FLAG("-Wno-deprecated-non-prototype" nodeprecated_prototype_avail)
+    if (nodeprecated_prototype_avail)
+      set(WARN "${WARN} -Wno-deprecated-non-prototype")
+    endif (nodeprecated_prototype_avail)
+    # Clang emits this warning due to the assembly shared between arm and
+    # aarch64 in os.c not specifying register widths. If the shared code is
+    # split into arm and aarch64 versions, then this warning can be re-enabled.
+    CHECK_C_COMPILER_FLAG("-Wno-asm-operand-widths" noasm_operand_widths)
+    if (noasm_operand_widths)
+      set(WARN "${WARN} -Wno-asm-operand-widths")
+    endif (noasm_operand_widths)
     # clang turns off color when it's writing to a pipe, but the user may still
     # wish to force color if it eventually goes to a terminal.
     option(CLANG_COLOR_DIAGNOSTICS "force colored clang diagnostics" OFF)
@@ -1370,19 +1442,8 @@ string(REGEX REPLACE
 math(EXPR VERSION_NUMBER_INTEGER
   "${VERSION_NUMBER_MAJOR}*100 + ${VERSION_NUMBER_MINOR}")
 
-# Every release since has had minor compat breakages.
-# 8.xx broke backcompat by reordering the AArch64 opcode enum an changing
-#   drcachesim field names, drmodtrack callbacks,
-#   emulated_instr_t fields, drcov output, drcachesim view counting, and
-#   drcachesim child statistics.
-# 7.92 broke backcompat by changing 32-bit stack alignment to 16.
-# 7.91 broke backcompat by adding a field to instr_t .
-# 7.90 broke backcompat in DR_REG_ enums and OPSZ_ enums.
-# 6.0 broke backcompat in Linux injection, mod load event, etc.
-# 5.0 broke backcompat in drsyms and xmm opnd sizes
-# 4.1 broke backcompat in drsyms + 64-bit core (opcodes + reachability)
-# 4.0 broke backcompat in drmgr, drsyms, drinjectlib, and dr_get_milliseconds()
-set(OLDEST_COMPATIBLE_VERSION_DEFAULT "990")
+# Every release since has had minor compat breakages: see api/docs/release.dox.
+set(OLDEST_COMPATIBLE_VERSION_DEFAULT "1100")
 set(OLDEST_COMPATIBLE_VERSION "" CACHE STRING
   "Oldest compatible version: leave empty for default")
 if ("${OLDEST_COMPATIBLE_VERSION}" STREQUAL "")
@@ -1825,10 +1886,18 @@ endfunction ()
 # TODO i#5767: Install an explicit zlib package on our Windows GA CI images
 # (this find_package finds a strawberry perl zlib which causes 32-bit build
 # and 64-bit private loader issues).
-if (WIN32 AND AUTOMATED_TESTING)
+option(DISABLE_ZLIB "Disable looking for and using zlib" OFF)
+if (WIN32 AND NOT DISABLE_ZLIB)
   set(ZLIB_FOUND OFF)
 else ()
   find_package(ZLIB)
+  # FindZLIB doesn't give us any library split so we manually
+  # convert to static.
+  set(ZLIB_STATIC_LIBRARIES "")
+  foreach (lib ${ZLIB_LIBRARIES})
+    string(REGEX REPLACE "\\.so$" ".a" newlib "${lib}")
+    list(APPEND ZLIB_STATIC_LIBRARIES ${newlib})
+  endforeach ()
 endif ()
 # On Ubuntu 14.10, 32-bit builds fail to link with -lsnappy, just ignore.
 if (UNIX AND X64)
@@ -1845,6 +1914,10 @@ if (UNIX AND X64)
     if (APPLE)
       mac_add_inc_and_lib(lz4.h liblz4.a)
     endif ()
+  endif ()
+  find_library(libxxhash xxhash)
+  if (libxxhash)
+    message(STATUS "Found libxxhash: ${libxxhash}")
   endif ()
 endif ()
 

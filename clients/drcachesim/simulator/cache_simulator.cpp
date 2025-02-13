@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2015-2022 Google, Inc.  All rights reserved.
+ * Copyright (c) 2015-2025 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -30,26 +30,40 @@
  * DAMAGE.
  */
 
-#include <iostream>
-#include <iterator>
-#include <string>
-#include <assert.h>
-#include <limits.h>
-#include <stdint.h> /* for supporting 64-bit integers*/
-#include "../common/memref.h"
-#include "../common/options.h"
-#include "../common/utils.h"
-#include "../reader/config_reader.h"
-#include "../reader/file_reader.h"
-#include "../reader/ipc_reader.h"
-#include "cache_stats.h"
-#include "cache.h"
-#include "cache_lru.h"
-#include "cache_fifo.h"
 #include "cache_simulator.h"
-#include "droption.h"
 
+#include <stddef.h>
+#include <stdint.h> /* for supporting 64-bit integers*/
+
+#include <functional>
+#include <iostream>
+#include <map>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "analysis_tool.h"
+#include "memref.h"
+#include "options.h"
+#include "trace_entry.h"
+#include "config_reader.h"
+#include "file_reader.h"
+#include "ipc_reader.h"
+#include "cache.h"
+#include "cache_fifo.h"
+#include "cache_lru.h"
+#include "cache_simulator_create.h"
+#include "cache_stats.h"
+#include "caching_device.h"
+#include "caching_device_stats.h"
+#include "prefetcher.h"
+#include "simulator.h"
 #include "snoop_filter.h"
+#include "utils.h"
+
+namespace dynamorio {
+namespace drmemtrace {
 
 analysis_tool_t *
 cache_simulator_create(const cache_simulator_knobs_t &knobs)
@@ -71,35 +85,46 @@ cache_simulator_create(const std::string &config_file)
     return sim;
 }
 
-cache_simulator_t::cache_simulator_t(const cache_simulator_knobs_t &knobs)
+cache_simulator_t::cache_simulator_t(const cache_simulator_knobs_t &knobs,
+                                     prefetcher_factory_t *custom_prefetcher_factory)
     : simulator_t(knobs.num_cores, knobs.skip_refs, knobs.warmup_refs,
                   knobs.warmup_fraction, knobs.sim_refs, knobs.cpu_scheduling,
                   knobs.use_physical, knobs.verbose)
     , knobs_(knobs)
     , l1_icaches_(NULL)
     , l1_dcaches_(NULL)
+    , custom_prefetcher_factory_(custom_prefetcher_factory)
     , is_warmed_up_(false)
 {
     // XXX i#1703: get defaults from hardware being run on.
 
     // This configuration allows for one shared LLC only.
-    cache_t *llc = create_cache(knobs_.replace_policy);
+    std::string cache_name = "LL";
+    cache_t *llc = create_cache(cache_name, knobs_.replace_policy);
     if (llc == NULL) {
         error_string_ = "create_cache failed for the LLC";
         success_ = false;
         return;
     }
 
-    std::string cache_name = "LL";
     all_caches_[cache_name] = llc;
     llcaches_[cache_name] = llc;
 
     if (knobs_.data_prefetcher != PREFETCH_POLICY_NEXTLINE &&
         knobs_.data_prefetcher != PREFETCH_POLICY_NONE) {
-        // Unknown value.
-        error_string_ = " unknown data_prefetcher: '" + knobs_.data_prefetcher + "'";
-        success_ = false;
-        return;
+        if (knobs_.data_prefetcher == PREFETCH_POLICY_CUSTOM) {
+            if (custom_prefetcher_factory_ == nullptr) {
+                error_string_ =
+                    "custom prefetcher was requested but no factory was provided.";
+                success_ = false;
+                return;
+            }
+        } else {
+            // Unknown value.
+            error_string_ = " unknown data_prefetcher: '" + knobs_.data_prefetcher + "'";
+            success_ = false;
+            return;
+        }
     }
 
     bool warmup_enabled_ = ((knobs_.warmup_refs > 0) || (knobs_.warmup_fraction > 0.0));
@@ -124,14 +149,16 @@ cache_simulator_t::cache_simulator_t(const cache_simulator_knobs_t &knobs)
     }
 
     for (unsigned int i = 0; i < knobs_.num_cores; i++) {
-        l1_icaches_[i] = create_cache(knobs_.replace_policy);
+        cache_name = "L1I" + (knobs_.num_cores > 0 ? std::to_string(i) : "");
+        l1_icaches_[i] = create_cache(cache_name, knobs_.replace_policy);
         if (l1_icaches_[i] == NULL) {
             error_string_ = "create_cache failed for an l1_icache";
             success_ = false;
             return;
         }
         snooped_caches_[2 * i] = l1_icaches_[i];
-        l1_dcaches_[i] = create_cache(knobs_.replace_policy);
+        cache_name = "L1D" + (knobs_.num_cores > 0 ? std::to_string(i) : "");
+        l1_dcaches_[i] = create_cache(cache_name, knobs_.replace_policy);
         if (l1_dcaches_[i] == NULL) {
             error_string_ = "create_cache failed for an l1_dcache";
             success_ = false;
@@ -143,17 +170,15 @@ cache_simulator_t::cache_simulator_t(const cache_simulator_knobs_t &knobs)
                 knobs_.L1I_assoc, (int)knobs_.line_size, (int)knobs_.L1I_size, llc,
                 new cache_stats_t((int)knobs_.line_size, "", warmup_enabled_,
                                   knobs_.model_coherence),
-                nullptr /*prefetcher*/, false /*inclusive*/, knobs_.model_coherence,
-                2 * i, snoop_filter_) ||
+                nullptr /*prefetcher*/, cache_inclusion_policy_t::NON_INC_NON_EXC,
+                knobs_.model_coherence, 2 * i, snoop_filter_) ||
             !l1_dcaches_[i]->init(
                 knobs_.L1D_assoc, (int)knobs_.line_size, (int)knobs_.L1D_size, llc,
                 new cache_stats_t((int)knobs_.line_size, "", warmup_enabled_,
                                   knobs_.model_coherence),
-                knobs_.data_prefetcher == PREFETCH_POLICY_NEXTLINE
-                    ? new prefetcher_t((int)knobs_.line_size)
-                    : nullptr,
-                false /*inclusive*/, knobs_.model_coherence, (2 * i) + 1,
-                snoop_filter_)) {
+                get_prefetcher(knobs_.data_prefetcher),
+                cache_inclusion_policy_t::NON_INC_NON_EXC, knobs_.model_coherence,
+                (2 * i) + 1, snoop_filter_)) {
             error_string_ = "Usage error: failed to initialize L1 caches.  Ensure sizes "
                             "divided by associativities are powers of 2 "
                             "and that the total sizes are multiples of the line size.";
@@ -161,10 +186,8 @@ cache_simulator_t::cache_simulator_t(const cache_simulator_knobs_t &knobs)
             return;
         }
 
-        cache_name = "L1_I_Cache_" + std::to_string(i);
-        all_caches_[cache_name] = l1_icaches_[i];
-        cache_name = "L1_D_Cache_" + std::to_string(i);
-        all_caches_[cache_name] = l1_dcaches_[i];
+        all_caches_[l1_icaches_[i]->get_name()] = l1_icaches_[i];
+        all_caches_[l1_dcaches_[i]->get_name()] = l1_dcaches_[i];
     }
 
     if (knobs_.model_coherence &&
@@ -175,12 +198,14 @@ cache_simulator_t::cache_simulator_t(const cache_simulator_knobs_t &knobs)
     }
 }
 
-cache_simulator_t::cache_simulator_t(std::istream *config_file)
+cache_simulator_t::cache_simulator_t(std::istream *config_file,
+                                     prefetcher_factory_t *custom_prefetcher_factory)
     : simulator_t()
     , l1_icaches_(NULL)
     , l1_dcaches_(NULL)
     , snooped_caches_(NULL)
     , snoop_filter_(NULL)
+    , custom_prefetcher_factory_(custom_prefetcher_factory)
     , is_warmed_up_(false)
 {
     std::map<std::string, cache_params_t> cache_params;
@@ -197,9 +222,19 @@ cache_simulator_t::cache_simulator_t(std::istream *config_file)
 
     if (knobs_.data_prefetcher != PREFETCH_POLICY_NEXTLINE &&
         knobs_.data_prefetcher != PREFETCH_POLICY_NONE) {
-        // Unknown prefetcher type.
-        success_ = false;
-        return;
+        if (knobs_.data_prefetcher == PREFETCH_POLICY_CUSTOM) {
+            if (custom_prefetcher_factory_ == nullptr) {
+                error_string_ = "custom prefetcher was requested but no factory was "
+                                "provided.";
+                success_ = false;
+                return;
+            }
+        } else {
+            // Unknown value.
+            error_string_ = " unknown data_prefetcher: '" + knobs_.data_prefetcher + "'";
+            success_ = false;
+            return;
+        }
     }
 
     bool warmup_enabled_ = ((knobs_.warmup_refs > 0) || (knobs_.warmup_fraction > 0.0));
@@ -212,7 +247,7 @@ cache_simulator_t::cache_simulator_t(std::istream *config_file)
         std::string cache_name = cache_params_it.first;
         const auto &cache_config = cache_params_it.second;
 
-        cache_t *cache = create_cache(cache_config.replace_policy);
+        cache_t *cache = create_cache(cache_name, cache_config.replace_policy);
         if (cache == NULL) {
             success_ = false;
             return;
@@ -315,14 +350,16 @@ cache_simulator_t::cache_simulator_t(std::istream *config_file)
         bool is_coherent_ = knobs_.model_coherence &&
             (non_coherent_caches_.find(cache_name) == non_coherent_caches_.end());
 
+        cache_inclusion_policy_t inclusion_policy = cache_config.inclusive
+            ? cache_inclusion_policy_t::INCLUSIVE
+            : cache_config.exclusive ? cache_inclusion_policy_t::EXCLUSIVE
+                                     : cache_inclusion_policy_t::NON_INC_NON_EXC;
         if (!cache->init((int)cache_config.assoc, (int)knobs_.line_size,
                          (int)cache_config.size, parent_,
                          new cache_stats_t((int)knobs_.line_size, cache_config.miss_file,
                                            warmup_enabled_, is_coherent_),
-                         cache_config.prefetcher == PREFETCH_POLICY_NEXTLINE
-                             ? new prefetcher_t((int)knobs_.line_size)
-                             : nullptr,
-                         cache_config.inclusive, is_coherent_, is_snooped ? snoop_id : -1,
+                         get_prefetcher(cache_config.prefetcher), inclusion_policy,
+                         is_coherent_, is_snooped ? snoop_id : -1,
                          is_snooped ? snoop_filter_ : nullptr, children)) {
             error_string_ = "Usage error: failed to initialize the cache " + cache_name;
             success_ = false;
@@ -432,6 +469,10 @@ cache_simulator_t::process_memref(const memref_t &memref)
     if (memref.marker.type == TRACE_TYPE_MARKER) {
         // We ignore markers before we ask core_for_thread, to avoid asking
         // too early on a timestamp marker.
+        // TODO i#7230: This causes -warmup_refs and -sim_refs to count non-marker
+        // records while -skip_refs counts all records.  We should either say
+        // that in the docs or change the behavior here.
+        // Plus, this skips the TRACE_MARKER_TYPE_CPU_ID handling below.
         if (knobs_.verbose >= 3) {
             std::cerr << "::" << memref.data.pid << "." << memref.data.tid << ":: "
                       << "marker type " << memref.marker.marker_type << " value "
@@ -440,13 +481,21 @@ cache_simulator_t::process_memref(const memref_t &memref)
         return true;
     }
 
-    int core;
-    if (memref.data.tid == last_thread_)
-        core = last_core_;
-    else {
-        core = core_for_thread(memref.data.tid);
-        last_thread_ = memref.data.tid;
-        last_core_ = core;
+    int core_index;
+    if (shard_type_ == SHARD_BY_THREAD) {
+        if (memref.data.tid == last_thread_)
+            core_index = last_core_index_;
+        else {
+            core_index = core_for_thread(memref.data.tid);
+            last_thread_ = memref.data.tid;
+            last_core_index_ = core_index;
+        }
+    } else
+        core_index = core_for_thread(memref.data.tid);
+    if (core_index >= static_cast<int>(knobs_.num_cores)) {
+        error_string_ = "Too-small core count " + std::to_string(knobs_.num_cores) +
+            " for trace core #" + std::to_string(core_index);
+        return false;
     }
 
     // To support swapping to physical addresses without modifying the passed-in
@@ -466,7 +515,7 @@ cache_simulator_t::process_memref(const memref_t &memref)
                       << " @" << (void *)simref->instr.addr << " instr x"
                       << simref->instr.size << "\n";
         }
-        l1_icaches_[core]->request(*simref);
+        l1_icaches_[core_index]->request(*simref);
     } else if (simref->data.type == TRACE_TYPE_READ ||
                simref->data.type == TRACE_TYPE_WRITE ||
                // We may potentially handle prefetches differently.
@@ -478,21 +527,21 @@ cache_simulator_t::process_memref(const memref_t &memref)
                       << trace_type_names[simref->data.type] << " "
                       << (void *)simref->data.addr << " x" << simref->data.size << "\n";
         }
-        l1_dcaches_[core]->request(*simref);
+        l1_dcaches_[core_index]->request(*simref);
     } else if (simref->flush.type == TRACE_TYPE_INSTR_FLUSH) {
         if (knobs_.verbose >= 3) {
             std::cerr << "::" << simref->data.pid << "." << simref->data.tid << ":: "
                       << " @" << (void *)simref->data.pc << " iflush "
                       << (void *)simref->data.addr << " x" << simref->data.size << "\n";
         }
-        l1_icaches_[core]->flush(*simref);
+        l1_icaches_[core_index]->flush(*simref);
     } else if (simref->flush.type == TRACE_TYPE_DATA_FLUSH) {
         if (knobs_.verbose >= 3) {
             std::cerr << "::" << simref->data.pid << "." << simref->data.tid << ":: "
                       << " @" << (void *)simref->data.pc << " dflush "
                       << (void *)simref->data.addr << " x" << simref->data.size << "\n";
         }
-        l1_dcaches_[core]->flush(*simref);
+        l1_dcaches_[core_index]->flush(*simref);
     } else if (simref->exit.type == TRACE_TYPE_THREAD_EXIT) {
         handle_thread_exit(simref->exit.tid);
         last_thread_ = 0;
@@ -525,6 +574,19 @@ cache_simulator_t::process_memref(const memref_t &memref)
     }
 
     return true;
+}
+
+prefetcher_t *
+cache_simulator_t::get_prefetcher(std::string prefetcher_name)
+{
+    if (prefetcher_name == PREFETCH_POLICY_NEXTLINE) {
+        return new prefetcher_t((int)knobs_.line_size);
+    }
+    if (prefetcher_name == PREFETCH_POLICY_CUSTOM) {
+        assert(custom_prefetcher_factory_ != nullptr);
+        return custom_prefetcher_factory_->create_prefetcher((int)knobs_.line_size);
+    }
+    return nullptr;
 }
 
 // Return true if the number of warmup references have been executed or if
@@ -574,15 +636,17 @@ cache_simulator_t::print_results()
     std::cerr << "Cache simulation results:\n";
     // Print core and associated L1 cache stats first.
     for (unsigned int i = 0; i < knobs_.num_cores; i++) {
-        print_core(i);
-        if (thread_ever_counts_[i] > 0) {
+        if (print_core(i)) {
             if (l1_icaches_[i] != l1_dcaches_[i]) {
-                std::cerr << "  L1I stats:" << std::endl;
+                std::cerr << "  " << l1_icaches_[i]->get_name() << " ("
+                          << l1_icaches_[i]->get_description() << ") stats:" << std::endl;
                 l1_icaches_[i]->get_stats()->print_stats("    ");
-                std::cerr << "  L1D stats:" << std::endl;
+                std::cerr << "  " << l1_dcaches_[i]->get_name() << " ("
+                          << l1_dcaches_[i]->get_description() << ") stats:" << std::endl;
                 l1_dcaches_[i]->get_stats()->print_stats("    ");
             } else {
-                std::cerr << "  unified L1 stats:" << std::endl;
+                std::cerr << "  unified " << l1_icaches_[i]->get_name() << " ("
+                          << l1_icaches_[i]->get_description() << ") stats:" << std::endl;
                 l1_icaches_[i]->get_stats()->print_stats("    ");
             }
         }
@@ -590,13 +654,15 @@ cache_simulator_t::print_results()
 
     // Print non-L1, non-LLC cache stats.
     for (auto &caches_it : other_caches_) {
-        std::cerr << caches_it.first << " stats:" << std::endl;
+        std::cerr << caches_it.first << " (" << caches_it.second->get_description()
+                  << ") stats:" << std::endl;
         caches_it.second->get_stats()->print_stats("    ");
     }
 
     // Print LLC stats.
     for (auto &caches_it : llcaches_) {
-        std::cerr << caches_it.first << " stats:" << std::endl;
+        std::cerr << caches_it.first << " (" << caches_it.second->get_description()
+                  << ") stats:" << std::endl;
         caches_it.second->get_stats()->print_stats("    ");
     }
 
@@ -609,7 +675,7 @@ cache_simulator_t::print_results()
 
 // All valid metrics are returned as a positive number.
 // Negative return value is an error and is of type stats_error_t.
-int_least64_t
+int64_t
 cache_simulator_t::get_cache_metric(metric_name_t metric, unsigned level, unsigned core,
                                     cache_split_t split) const
 {
@@ -649,18 +715,46 @@ cache_simulator_t::get_knobs() const
 }
 
 cache_t *
-cache_simulator_t::create_cache(const std::string &policy)
+cache_simulator_t::create_cache(const std::string &name, const std::string &policy)
 {
     if (policy == REPLACE_POLICY_NON_SPECIFIED || // default LRU
         policy == REPLACE_POLICY_LRU)             // set to LRU
-        return new cache_lru_t;
+        return new cache_lru_t(name);
     if (policy == REPLACE_POLICY_LFU) // set to LFU
-        return new cache_t;
+        return new cache_t(name);
     if (policy == REPLACE_POLICY_FIFO) // set to FIFO
-        return new cache_fifo_t;
+        return new cache_fifo_t(name);
 
     // undefined replacement policy
     ERRMSG("Usage error: undefined replacement policy. "
            "Please choose " REPLACE_POLICY_LRU " or " REPLACE_POLICY_LFU ".\n");
     return NULL;
 }
+
+// Access snoop filter stats.
+int64_t
+cache_simulator_t::get_num_snooped_caches(void)
+{
+    return (snoop_filter_ == nullptr) ? 0 : snoop_filter_->get_num_snooped_caches();
+}
+
+int64_t
+cache_simulator_t::get_num_snoop_writes(void)
+{
+    return (snoop_filter_ == nullptr) ? 0 : snoop_filter_->get_num_writes();
+}
+
+int64_t
+cache_simulator_t::get_num_snoop_writebacks(void)
+{
+    return (snoop_filter_ == nullptr) ? 0 : snoop_filter_->get_num_writebacks();
+}
+
+int64_t
+cache_simulator_t::get_num_snoop_invalidates(void)
+{
+    return (snoop_filter_ == nullptr) ? 0 : snoop_filter_->get_num_invalidates();
+}
+
+} // namespace drmemtrace
+} // namespace dynamorio

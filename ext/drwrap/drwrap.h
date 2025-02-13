@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2010-2022 Google, Inc.   All rights reserved.
+ * Copyright (c) 2010-2023 Google, Inc.   All rights reserved.
  * **********************************************************/
 
 /* drwrap: DynamoRIO Function Wrapping and Replacing Extension
@@ -379,7 +379,8 @@ DR_EXPORT
  * \return whether successful.
  */
 bool
-drwrap_wrap(app_pc func, void (*pre_func_cb)(void *wrapcxt, OUT void **user_data),
+drwrap_wrap(app_pc func,
+            void (*pre_func_cb)(void *wrapcxt, DR_PARAM_OUT void **user_data),
             void (*post_func_cb)(void *wrapcxt, void *user_data));
 
 /**
@@ -416,10 +417,13 @@ typedef enum {
      * However, this does violate transparency, and may cause some applications to fail.
      * In particular, detaching on AArchXX requires scanning the stack to find where the
      * return address was stored, which could conceivably replace an integer or
-     * non-pointer value that happens to match the sentinel used.  Use this at your own
-     * risk.
+     * non-pointer value that happens to match the sentinel used. Also, the transparency
+     * violation may be exposed to the client's dr_register_kernel_xfer_event() callback
+     * if it inspects the mcontext PC on the stack; drwrap_get_retaddr_if_sentinel()
+     * may be used to mitigate such cases. Use #DRWRAP_REPLACE_RETADDR at your own risk.
+     * Currently is not supported for RISC-V.
      */
-    DRWRAP_REPLACE_RETADDR = 0x04,
+    DRWRAP_REPLACE_RETADDR = 0x04, /* TODO i#3544: support flag for RISC-V 64 */
 } drwrap_wrap_flags_t;
 
 /* offset of drwrap_callconv_t in drwrap_wrap_flags_t */
@@ -456,6 +460,9 @@ typedef enum {
 #    ifdef AARCH64
     /** Default calling convention for the platform. */
     DRWRAP_CALLCONV_DEFAULT = DRWRAP_CALLCONV_AARCH64,
+#    elif defined(RISCV64)
+    /** Default calling convention for the platform. */
+    DRWRAP_CALLCONV_DEFAULT = DRWRAP_CALLCONV_RISCV_LP64,
 #    elif defined(UNIX) /* x64 */
     /** Default calling convention for the platform. */
     DRWRAP_CALLCONV_DEFAULT = DRWRAP_CALLCONV_AMD64,
@@ -499,7 +506,8 @@ DR_EXPORT
  * processing a registered event callback or cache callout.
  */
 bool
-drwrap_wrap_ex(app_pc func, void (*pre_func_cb)(void *wrapcxt, INOUT void **user_data),
+drwrap_wrap_ex(app_pc func,
+               void (*pre_func_cb)(void *wrapcxt, DR_PARAM_INOUT void **user_data),
                void (*post_func_cb)(void *wrapcxt, void *user_data), void *user_data,
                uint flags);
 
@@ -514,7 +522,8 @@ DR_EXPORT
  * \return whether successful.
  */
 bool
-drwrap_unwrap(app_pc func, void (*pre_func_cb)(void *wrapcxt, OUT void **user_data),
+drwrap_unwrap(app_pc func,
+              void (*pre_func_cb)(void *wrapcxt, DR_PARAM_OUT void **user_data),
               void (*post_func_cb)(void *wrapcxt, void *user_data));
 
 DR_EXPORT
@@ -848,7 +857,8 @@ DR_EXPORT
  * and \p post_func_cb.
  */
 bool
-drwrap_is_wrapped(app_pc func, void (*pre_func_cb)(void *wrapcxt, OUT void **user_data),
+drwrap_is_wrapped(app_pc func,
+                  void (*pre_func_cb)(void *wrapcxt, DR_PARAM_OUT void **user_data),
                   void (*post_func_cb)(void *wrapcxt, void *user_data));
 
 DR_EXPORT
@@ -885,7 +895,19 @@ DR_EXPORT
  * Returns false if stats are not enabled.
  */
 bool
-drwrap_get_stats(INOUT drwrap_stats_t *stats);
+drwrap_get_stats(DR_PARAM_OUT drwrap_stats_t *stats);
+
+DR_EXPORT
+/**
+ * If the provided app_pc (\p possibly_sentinel) is indeed the return address sentinel
+ * used to implement #DRWRAP_REPLACE_RETADDR, this routine replaces it with the actual
+ * return address of the inner-most nested wrapped function. Otherwise, it is a no-op.
+ * This allows mitigation of a transparency violation under the #DRWRAP_REPLACE_RETADDR
+ * strategy where the actual app return address on the stack is replaced with a return
+ * address sentinel.
+ */
+void
+drwrap_get_retaddr_if_sentinel(void *drcontext, DR_PARAM_INOUT app_pc *possibly_sentinel);
 
 /**@}*/ /* end doxygen group */
 

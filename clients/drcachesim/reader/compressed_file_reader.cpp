@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2017-2022 Google, Inc.  All rights reserved.
+ * Copyright (c) 2017-2025 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -32,7 +32,17 @@
 
 #include "compressed_file_reader.h"
 
-namespace {
+#include <zlib.h>
+
+#include <memory>
+#include <string>
+
+#include "file_reader.h"
+#include "record_file_reader.h"
+#include "trace_entry.h"
+
+namespace dynamorio {
+namespace drmemtrace {
 
 /**************************************************************************
  * Common logic used in the gzip_reader_t specializations for file_reader_t
@@ -42,32 +52,36 @@ namespace {
 bool
 open_single_file_common(const std::string &path, gzFile &out)
 {
-    out = gzopen(path.c_str(), "rb");
+    if (path == "-") {
+        // We assume stdin is 0.
+        // We do not use the glibc-specific "stdin->_fileno" method of finding the
+        // stdin descriptor number as that is not portable to musl or other libc.
+        constexpr int STDIN_FD = 0;
+        out = gzdopen(STDIN_FD, "rb");
+    } else
+        out = gzopen(path.c_str(), "rb");
     return out != nullptr;
 }
 
-bool
-read_next_thread_entry_common(gzip_reader_t *gzip, OUT trace_entry_t *entry,
-                              OUT bool *eof)
+trace_entry_t *
+read_next_entry_common(gzip_reader_t *gzip, bool *eof)
 {
     if (gzip->cur_buf >= gzip->max_buf) {
         int len = gzread(gzip->file, gzip->buf, sizeof(gzip->buf));
-        // Returns less than asked-for for end of file, or –1 for error.
+        // Returns less than asked-for if at end of file, or –1 for error.
         // We should always get a multiple of the record size.
-        if (len < static_cast<int>(sizeof(*entry)) ||
-            len % static_cast<int>(sizeof(*entry)) != 0) {
+        if (len < static_cast<int>(sizeof(trace_entry_t)) ||
+            len % static_cast<int>(sizeof(trace_entry_t)) != 0) {
             *eof = (len >= 0);
-            return false;
+            return nullptr;
         }
         gzip->cur_buf = gzip->buf;
         gzip->max_buf = gzip->buf + (len / sizeof(*gzip->max_buf));
     }
-    *entry = *gzip->cur_buf;
+    trace_entry_t *res = gzip->cur_buf;
     ++gzip->cur_buf;
-    return true;
+    return res;
 }
-
-} // namespace
 
 /**************************************************
  * gzip_reader_t specializations for file_reader_t.
@@ -76,11 +90,20 @@ read_next_thread_entry_common(gzip_reader_t *gzip, OUT trace_entry_t *entry,
 /* clang-format off */ /* (make vera++ newline-after-type check happy) */
 template <>
 /* clang-format on */
-file_reader_t<gzip_reader_t>::~file_reader_t<gzip_reader_t>()
+file_reader_t<gzip_reader_t>::file_reader_t()
 {
-    for (auto &gzip : input_files_)
-        gzclose(gzip.file);
-    delete[] thread_eof_;
+    input_file_.file = nullptr;
+}
+
+/* clang-format off */ /* (make vera++ newline-after-type check happy) */
+template <>
+/* clang-format on */
+file_reader_t<gzip_reader_t>::~file_reader_t()
+{
+    if (input_file_.file != nullptr) {
+        gzclose(input_file_.file);
+        input_file_.file = nullptr;
+    }
 }
 
 template <>
@@ -91,38 +114,25 @@ file_reader_t<gzip_reader_t>::open_single_file(const std::string &path)
     if (!open_single_file_common(path, file))
         return false;
     VPRINT(this, 1, "Opened input file %s\n", path.c_str());
-    input_files_.emplace_back(file);
+    input_file_ = gzip_reader_t(file);
     return true;
 }
 
 template <>
-bool
-file_reader_t<gzip_reader_t>::read_next_thread_entry(size_t thread_index,
-                                                     OUT trace_entry_t *entry,
-                                                     OUT bool *eof)
+trace_entry_t *
+file_reader_t<gzip_reader_t>::read_next_entry()
 {
-    if (!read_next_thread_entry_common(&input_files_[thread_index], entry, eof))
-        return false;
-    VPRINT(this, 4, "Read from thread #%zd file: type=%s (%d), size=%d, addr=%zu\n",
-           thread_index, trace_type_names[entry->type], entry->type, entry->size,
-           entry->addr);
-    return true;
+    trace_entry_t *entry = read_queued_entry();
+    if (entry != nullptr)
+        return entry;
+    entry = read_next_entry_common(&input_file_, &at_eof_);
+    if (entry == nullptr)
+        return entry;
+    VPRINT(this, 4, "Read from file: type=%s (%d), size=%d, addr=%zu\n",
+           trace_type_names[entry->type], entry->type, entry->size, entry->addr);
+    entry_copy_ = *entry;
+    return &entry_copy_;
 }
-
-template <>
-bool
-file_reader_t<gzip_reader_t>::is_complete()
-{
-    // The gzip reading interface does not support seeking to SEEK_END so there
-    // is no efficient way to read the footer.
-    // We could have the trace file writer seek back and set a bit at the start.
-    // Currently we are forced to not use this function.
-    // XXX: Should we just remove this interface, then?
-    return false;
-}
-
-namespace dynamorio {
-namespace drmemtrace {
 
 /*********************************************************
  * gzip_reader_t specializations for record_file_reader_t.
@@ -131,7 +141,7 @@ namespace drmemtrace {
 /* clang-format off */ /* (make vera++ newline-after-type check happy) */
 template <>
 /* clang-format on */
-record_file_reader_t<gzip_reader_t>::~record_file_reader_t<gzip_reader_t>()
+record_file_reader_t<gzip_reader_t>::~record_file_reader_t()
 {
     if (input_file_ != nullptr) {
         gzclose(input_file_->file);
@@ -154,8 +164,10 @@ template <>
 bool
 record_file_reader_t<gzip_reader_t>::read_next_entry()
 {
-    if (!read_next_thread_entry_common(input_file_.get(), &cur_entry_, &eof_))
+    trace_entry_t *entry = read_next_entry_common(input_file_.get(), &eof_);
+    if (entry == nullptr)
         return false;
+    cur_entry_ = *entry;
     VPRINT(this, 4, "Read from file: type=%s (%d), size=%d, addr=%zu\n",
            trace_type_names[cur_entry_.type], cur_entry_.type, cur_entry_.size,
            cur_entry_.addr);

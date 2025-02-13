@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2021 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2024 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -43,8 +43,8 @@
 #define _OS_EXPORTS_H_ 1
 
 #include <stdarg.h>
-#include "../os_shared.h"
-#include "os_public.h"
+#include "../os_shared.h" // IWYU pragma: export
+#include "os_public.h"    // IWYU pragma: export
 /* arch_exports.h exports opnd.h, but relies on kernel_sigset_t from this header.
  * We thus directly include opnd.h here for reg_id_t to resolve the circular
  * dependence (cleaner than having to use ushort instead of reg_id_t).
@@ -152,10 +152,11 @@
  * limited interoperability w/ code targeting the Windows x64 ABI. We steal slot 6
  * for our own use.
  */
-#    define SEG_TLS_BASE_OFFSET 28 /* offset from pthread_t struct to segment base */
-#    define DR_TLS_BASE_SLOT 6     /* the TLS slot for DR's TLS base */
+/* XXX i#5383: This is used as *8 so it's really a slot not a byte offset. */
+#    define SEG_TLS_BASE_SLOT 28 /* offset from pthread_t struct to segment base */
+#    define DR_TLS_BASE_SLOT 6   /* the TLS slot for DR's TLS base */
 /* offset from pthread_t struct to slot 6 */
-#    define DR_TLS_BASE_OFFSET (SEG_TLS_BASE_OFFSET + DR_TLS_BASE_SLOT)
+#    define DR_TLS_BASE_OFFSET (sizeof(void *) * (SEG_TLS_BASE_SLOT + DR_TLS_BASE_SLOT))
 #endif
 
 #if defined(AARCHXX) && !defined(MACOS64)
@@ -164,12 +165,8 @@
  * pthread_internal_t. However, its offset varies by Android version, requiring
  * indirection through a variable.
  */
-#        ifdef AARCH64
-#            error NYI
-#        else
 extern uint android_tls_base_offs;
-#            define DR_TLS_BASE_OFFSET android_tls_base_offs
-#        endif
+#        define DR_TLS_BASE_OFFSET android_tls_base_offs
 #    else
 /* The TLS slot for DR's TLS base.
  * On ARM, we use the 'private' field of the tcbhead_t to store DR TLS base,
@@ -193,14 +190,16 @@ extern uint android_tls_base_offs;
 #endif
 
 #ifdef RISCV64
-/* FIXME i#3544: We might need to re-use ARM's approach and store DR TLS in
- * tcb_head_t::private field: typedef struct
+/* Re-using ARM's approach and store DR TLS in tcb_head_t::private,
+ * with the only difference being tp register points at the end of TCB.
+ *
+ * typedef struct
  *   {
  *     dtv_t *dtv;
  *     void *private;
  *   } tcb_head_t;
  */
-#    define DR_TLS_BASE_OFFSET IF_X64_ELSE(8, 4) /* skip dtv */
+#    define DR_TLS_BASE_OFFSET IF_X64_ELSE(-8, -4) /* tcb->private, skip dtv */
 #endif
 
 #ifdef LINUX
@@ -243,6 +242,20 @@ ushort
 os_get_app_tls_reg_offset(reg_id_t seg);
 void *
 os_get_app_tls_base(dcontext_t *dcontext, reg_id_t seg);
+/* XXX i#2154: Add Android AArch64 support. */
+#if (defined(AARCH64) && !defined(ANDROID64)) || (defined(X64) && defined(X86))
+/* os_dump_core_live has the same restriction as dr_suspend_all_other_threads_ex().
+ * For X86_64 platform, fast FP save and restore (fxsave64) support is required. And mixed
+ * mode (a process mixing 64-bit and 32-bit code) is not supported.
+ */
+bool
+os_dump_core_live(dcontext_t *dcontext, char *path DR_PARAM_OUT, size_t path_sz);
+#endif
+
+#if defined(AARCHXX) || defined(RISCV64)
+bool
+os_set_app_tls_base(dcontext_t *dcontext, reg_id_t reg, void *base);
+#endif
 
 #ifdef DEBUG
 void
@@ -439,16 +452,20 @@ is_DR_segment_reader_entry(app_pc pc);
 #define SIGARRAY_SIZE (MAX_SIGNUM + 1)
 
 /* size of long */
-#ifdef X64
-#    define _NSIG_BPW 64
-#else
-#    define _NSIG_BPW 32
+#ifndef _NSIG_BPW
+#    ifdef X64
+#        define _NSIG_BPW 64
+#    else
+#        define _NSIG_BPW 32
+#    endif
 #endif
 
-#ifdef LINUX
-#    define _NSIG_WORDS (MAX_SIGNUM / _NSIG_BPW)
-#else
-#    define _NSIG_WORDS 1 /* avoid 0 */
+#ifndef _NSIG_WORDS
+#    ifdef LINUX
+#        define _NSIG_WORDS (MAX_SIGNUM / _NSIG_BPW)
+#    else
+#        define _NSIG_WORDS 1 /* avoid 0 */
+#    endif
 #endif
 
 /* kernel's sigset_t packs info into bits, while glibc's uses a short for
@@ -528,11 +545,11 @@ get_clone_record_app_xsp(void *record);
 byte *
 get_clone_record_dstack(void *record);
 
-#ifdef AARCHXX
+#if defined(AARCHXX) || defined(RISCV64)
 reg_t
 get_clone_record_stolen_value(void *record);
 
-#    ifndef AARCH64
+#    ifdef ARM
 uint /* dr_isa_mode_t but we have a header ordering problem */
 get_clone_record_isa_mode(void *record);
 #    endif
@@ -593,13 +610,14 @@ send_nudge_signal(process_id_t pid, uint action_mask, client_id_t client_id,
 bool
 at_dl_runtime_resolve_ret(dcontext_t *dcontext, app_pc source_fragment, int *ret_imm);
 
-/* rseq.c */
+/* rseq_linux.c */
 #ifdef LINUX
 extern vm_area_vector_t *d_r_rseq_areas;
 
 bool
-rseq_get_region_info(app_pc pc, app_pc *start OUT, app_pc *end OUT, app_pc *handler OUT,
-                     bool **reg_written OUT, int *reg_written_size OUT);
+rseq_get_region_info(app_pc pc, app_pc *start DR_PARAM_OUT, app_pc *end DR_PARAM_OUT,
+                     app_pc *handler DR_PARAM_OUT, bool **reg_written DR_PARAM_OUT,
+                     int *reg_written_size DR_PARAM_OUT);
 
 bool
 rseq_set_final_instr_pc(app_pc start, app_pc final_instr_pc);
@@ -614,7 +632,7 @@ int
 rseq_get_rseq_cs_alignment(void);
 
 byte *
-rseq_get_rseq_cs_alloc(byte **rseq_cs_aligned OUT);
+rseq_get_rseq_cs_alloc(byte **rseq_cs_aligned DR_PARAM_OUT);
 
 /* The first parameter is the value returned by rseq_get_rseq_cs_alloc(). */
 void
@@ -628,6 +646,9 @@ rseq_shared_fragment_flushtime_update(dcontext_t *dcontext);
 
 void
 rseq_process_native_abort(dcontext_t *dcontext);
+
+void
+rseq_insert_start_label(dcontext_t *dcontext, app_pc tag, instrlist_t *ilist);
 
 #endif
 

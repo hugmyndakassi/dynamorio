@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2022 Google, Inc.  All rights reserved.
+ * Copyright (c) 2022-2023 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -38,6 +38,14 @@
 
 #include <iostream>
 #include <memory>
+
+namespace dynamorio {
+namespace drmemtrace {
+
+using ::dynamorio::droption::droption_parser_t;
+using ::dynamorio::droption::DROPTION_SCOPE_ALL;
+using ::dynamorio::droption::DROPTION_SCOPE_FRONTEND;
+using ::dynamorio::droption::droption_t;
 
 #ifndef HAS_ZIP
 #    error zipfile reading is required for this test
@@ -89,9 +97,8 @@ test_skip_initial()
         std::unique_ptr<reader_t> iter_end =
             std::unique_ptr<reader_t>(new zipfile_file_reader_t());
         // Run the tool.
-        std::unique_ptr<analysis_tool_t> tool =
-            std::unique_ptr<analysis_tool_t>(view_tool_create(
-                "", /*thread=*/0, /*skip_refs=*/0, /*sim_refs=*/view_count, "att"));
+        std::unique_ptr<analysis_tool_t> tool = std::unique_ptr<analysis_tool_t>(
+            view_tool_create("", /*skip_refs=*/0, /*sim_refs=*/view_count, "att"));
         std::string error = tool->initialize_stream(iter.get());
         CHECK(error.empty(), error.c_str());
         iter->skip_instructions(skip_instrs);
@@ -111,9 +118,9 @@ test_skip_initial()
         //    Output format:
         //    <--record#-> <--instr#->: <---tid---> <record details>
         //    ------------------------------------------------------------
-        //               0          49:     3854659 <marker: timestamp 13312570674112282>
-        //               0          49:     3854659 <marker: tid 3854659 on core 3>
-        //              62          50:     3854659 ifetch    2 byte(s) @ 0x0000000401 ...
+        //              69          49:     3854659 <marker: timestamp 13312570674112282>
+        //              70          49:     3854659 <marker: tid 3854659 on core 3>
+        //              71          50:     3854659 ifetch    2 byte(s) @ 0x0000000401 ...
         //                                   d9                jnz    $0x000000000040100b
         std::string line;
         // First we expect "Output format:"
@@ -126,22 +133,18 @@ test_skip_initial()
         std::getline(res_stream, line, '\n');
         CHECK(starts_with(line, "------"), "missing divider line");
         // Next we expect the timestamp entry with the instruction count before
-        // a colon: "        0       49: T3854659 <marker: timestamp 13312570674112282>"
-        // We expect the count to equal the -skip_instrs value, with a 0 ref count.
+        // a colon: "       69       49: T3854659 <marker: timestamp 13312570674112282>"
+        // We expect the count to equal the -skip_instrs value.
         std::getline(res_stream, line, '\n');
         std::stringstream expect_stream;
         expect_stream << skip_instrs << ":";
-        CHECK(skip_instrs == 0 || line.find(" 0 ") != std::string::npos,
-              "bad ref ordinal");
         CHECK(line.find(expect_stream.str()) != std::string::npos, "bad instr ordinal");
         CHECK(skip_instrs == 0 || line.find("timestamp") != std::string::npos,
               "missing timestamp");
-        // Next we expect the cpuid entry, with a 0 ref count too.
+        // Next we expect the cpuid entry.
         std::getline(res_stream, line, '\n');
         CHECK(skip_instrs == 0 || line.find("on core") != std::string::npos,
               "missing cpuid");
-        CHECK(skip_instrs == 0 || line.find(" 0 ") != std::string::npos,
-              "bad ref ordinal");
         // Next we expect the target instruction fetch.
         std::getline(res_stream, line, '\n');
         CHECK(skip_instrs == 0 || line.find("ifetch") != std::string::npos,
@@ -158,7 +161,7 @@ test_skip_initial()
 }
 
 int
-main(int argc, const char *argv[])
+test_main(int argc, const char *argv[])
 {
     std::string parse_err;
     if (!droption_parser_t::parse_argv(DROPTION_SCOPE_FRONTEND, argc, (const char **)argv,
@@ -174,3 +177,6 @@ main(int argc, const char *argv[])
     fprintf(stderr, "Success\n");
     return 0;
 }
+
+} // namespace drmemtrace
+} // namespace dynamorio

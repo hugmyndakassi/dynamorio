@@ -56,6 +56,8 @@
 #cmakedefine VMKERNEL
 #cmakedefine MACOS
 #cmakedefine ANDROID
+#cmakedefine ANDROID64
+#cmakedefine ANDROID32
 #if defined(MACOS) || defined (LINUX) || defined(VMKERNEL) || defined(ANDROID)
 # define UNIX
 #endif
@@ -63,6 +65,7 @@
 /* Used a lot due to the different TLS.  We thus provide a convenience define. */
 # define MACOS64
 #endif
+#cmakedefine MUSL
 
 /* host, when different */
 #cmakedefine DR_HOST_X86

@@ -58,53 +58,53 @@ OPCODE(vmovsd_xhik7xlo, vmovsd, vmovsd_NDS_mask, X64_ONLY, REGARG(XMM16), REGARG
 OPCODE(vmovsd_xlok7xhi, vmovsd, vmovsd_NDS_mask, X64_ONLY, REGARG(XMM0), REGARG(K7),
        REGARG_PARTIAL(XMM1, OPSZ_8), REGARG_PARTIAL(XMM16, OPSZ_8))
 OPCODE(vunpcklps_xlok0xlold, vunpcklps, vunpcklps_mask, 0, REGARG(XMM0), REGARG(K0),
-       REGARG_PARTIAL(XMM1, OPSZ_8), MEMARG(OPSZ_8))
+       REGARG(XMM1), MEMARG(OPSZ_16))
 OPCODE(vunpcklps_xhik7xhild, vunpcklps, vunpcklps_mask, X64_ONLY, REGARG(XMM16),
-       REGARG(K7), REGARG_PARTIAL(XMM31, OPSZ_8), MEMARG(OPSZ_8))
+       REGARG(K7), REGARG(XMM31), MEMARG(OPSZ_16))
 OPCODE(vunpcklps_ylok0ylold, vunpcklps, vunpcklps_mask, 0, REGARG(YMM0), REGARG(K0),
-       REGARG_PARTIAL(YMM1, OPSZ_16), MEMARG(OPSZ_16))
+       REGARG(YMM1), MEMARG(OPSZ_32))
 OPCODE(vunpcklps_yhik7yhild, vunpcklps, vunpcklps_mask, X64_ONLY, REGARG(YMM16),
-       REGARG(K7), REGARG_PARTIAL(YMM31, OPSZ_16), MEMARG(OPSZ_16))
+       REGARG(K7), REGARG(YMM31), MEMARG(OPSZ_32))
 OPCODE(vunpcklps_zlok0zlold, vunpcklps, vunpcklps_mask, 0, REGARG(ZMM0), REGARG(K0),
-       REGARG_PARTIAL(ZMM1, OPSZ_32), MEMARG(OPSZ_32))
+       REGARG(ZMM1), MEMARG(OPSZ_64))
 OPCODE(vunpcklps_zhik7zhild, vunpcklps, vunpcklps_mask, X64_ONLY, REGARG(ZMM16),
-       REGARG(K7), REGARG_PARTIAL(ZMM31, OPSZ_32), MEMARG(OPSZ_32))
+       REGARG(K7), REGARG(ZMM31), MEMARG(OPSZ_64))
 OPCODE(vunpcklpd_xlok0xlold, vunpcklpd, vunpcklpd_mask, 0, REGARG(XMM0), REGARG(K0),
-       REGARG_PARTIAL(XMM1, OPSZ_8), MEMARG(OPSZ_8))
+       REGARG(XMM1), MEMARG(OPSZ_16))
 OPCODE(vunpcklpd_xhik7xhild, vunpcklpd, vunpcklpd_mask, X64_ONLY, REGARG(XMM16),
-       REGARG(K7), REGARG_PARTIAL(XMM31, OPSZ_8), MEMARG(OPSZ_8))
+       REGARG(K7), REGARG(XMM31), MEMARG(OPSZ_16))
 OPCODE(vunpcklpd_ylok0ylold, vunpcklpd, vunpcklpd_mask, 0, REGARG(YMM0), REGARG(K0),
-       REGARG_PARTIAL(YMM1, OPSZ_16), MEMARG(OPSZ_16))
+       REGARG(YMM1), MEMARG(OPSZ_32))
 OPCODE(vunpcklpd_yhik7yhild, vunpcklpd, vunpcklpd_mask, X64_ONLY, REGARG(YMM16),
-       REGARG(K7), REGARG_PARTIAL(YMM31, OPSZ_16), MEMARG(OPSZ_16))
+       REGARG(K7), REGARG(YMM31), MEMARG(OPSZ_32))
 OPCODE(vunpcklpd_zlok0zlold, vunpcklpd, vunpcklpd_mask, 0, REGARG(ZMM0), REGARG(K0),
-       REGARG_PARTIAL(ZMM1, OPSZ_32), MEMARG(OPSZ_32))
+       REGARG(ZMM1), MEMARG(OPSZ_64))
 OPCODE(vunpcklpd_zhik7zhild, vunpcklpd, vunpcklpd_mask, X64_ONLY, REGARG(ZMM16),
-       REGARG(K7), REGARG_PARTIAL(ZMM31, OPSZ_32), MEMARG(OPSZ_32))
+       REGARG(K7), REGARG(ZMM31), MEMARG(OPSZ_64))
 OPCODE(vunpckhps_xlok0xlold, vunpckhps, vunpckhps_mask, 0, REGARG(XMM0), REGARG(K0),
-       REGARG_PARTIAL(XMM1, OPSZ_8), MEMARG(OPSZ_8))
+       REGARG(XMM1), MEMARG(OPSZ_16))
 OPCODE(vunpckhps_xhik7xhild, vunpckhps, vunpckhps_mask, X64_ONLY, REGARG(XMM16),
-       REGARG(K7), REGARG_PARTIAL(XMM31, OPSZ_8), MEMARG(OPSZ_8))
+       REGARG(K7), REGARG(XMM31), MEMARG(OPSZ_16))
 OPCODE(vunpckhps_ylok0ylold, vunpckhps, vunpckhps_mask, 0, REGARG(YMM0), REGARG(K0),
-       REGARG_PARTIAL(YMM1, OPSZ_16), MEMARG(OPSZ_16))
+       REGARG(YMM1), MEMARG(OPSZ_32))
 OPCODE(vunpckhps_yhik7yhild, vunpckhps, vunpckhps_mask, X64_ONLY, REGARG(YMM16),
-       REGARG(K7), REGARG_PARTIAL(YMM31, OPSZ_16), MEMARG(OPSZ_16))
+       REGARG(K7), REGARG(YMM31), MEMARG(OPSZ_32))
 OPCODE(vunpckhps_zlok0zlold, vunpckhps, vunpckhps_mask, 0, REGARG(ZMM0), REGARG(K0),
-       REGARG_PARTIAL(ZMM1, OPSZ_32), MEMARG(OPSZ_32))
+       REGARG(ZMM1), MEMARG(OPSZ_64))
 OPCODE(vunpckhps_zhik7zhild, vunpckhps, vunpckhps_mask, X64_ONLY, REGARG(ZMM16),
-       REGARG(K7), REGARG_PARTIAL(ZMM31, OPSZ_32), MEMARG(OPSZ_32))
+       REGARG(K7), REGARG(ZMM31), MEMARG(OPSZ_64))
 OPCODE(vunpckhpd_xlok0xlold, vunpckhpd, vunpckhpd_mask, 0, REGARG(XMM0), REGARG(K0),
-       REGARG_PARTIAL(XMM1, OPSZ_8), MEMARG(OPSZ_8))
+       REGARG(XMM1), MEMARG(OPSZ_16))
 OPCODE(vunpckhpd_xhik7xhild, vunpckhpd, vunpckhpd_mask, X64_ONLY, REGARG(XMM16),
-       REGARG(K7), REGARG_PARTIAL(XMM31, OPSZ_8), MEMARG(OPSZ_8))
+       REGARG(K7), REGARG(XMM31), MEMARG(OPSZ_16))
 OPCODE(vunpckhpd_ylok0ylold, vunpckhpd, vunpckhpd_mask, 0, REGARG(YMM0), REGARG(K0),
-       REGARG_PARTIAL(YMM1, OPSZ_16), MEMARG(OPSZ_16))
+       REGARG(YMM1), MEMARG(OPSZ_32))
 OPCODE(vunpckhpd_yhik7yhild, vunpckhpd, vunpckhpd_mask, X64_ONLY, REGARG(YMM16),
-       REGARG(K7), REGARG_PARTIAL(YMM31, OPSZ_16), MEMARG(OPSZ_16))
+       REGARG(K7), REGARG(YMM31), MEMARG(OPSZ_32))
 OPCODE(vunpckhpd_zlok0zlold, vunpckhpd, vunpckhpd_mask, 0, REGARG(ZMM0), REGARG(K0),
-       REGARG_PARTIAL(ZMM1, OPSZ_32), MEMARG(OPSZ_32))
+       REGARG(ZMM1), MEMARG(OPSZ_64))
 OPCODE(vunpckhpd_zhik7zhild, vunpckhpd, vunpckhpd_mask, X64_ONLY, REGARG(ZMM16),
-       REGARG(K7), REGARG_PARTIAL(ZMM31, OPSZ_32), MEMARG(OPSZ_32))
+       REGARG(K7), REGARG(ZMM31), MEMARG(OPSZ_64))
 OPCODE(vandps_xlok0xloxlo, vandps, vandps_mask, 0, REGARG(XMM0), REGARG(K0), REGARG(XMM1),
        REGARG(XMM2))
 OPCODE(vandps_xlok0xlold, vandps, vandps_mask, 0, REGARG(XMM0), REGARG(K0), REGARG(XMM1),
@@ -3415,3 +3415,111 @@ OPCODE(vfnmsub231sd_xlok0xlom, vfnmsub231sd, vfnmsub231sd_mask, 0,
 OPCODE(vfnmsub231sd_xhik0xhim, vfnmsub231sd, vfnmsub231sd_mask, X64_ONLY,
        REGARG_PARTIAL(XMM16, OPSZ_8), REGARG(K7), REGARG_PARTIAL(XMM31, OPSZ_8),
        MEMARG(OPSZ_8))
+OPCODE(vpshldvw_xlok0xloxlo, vpshldvw, vpshldvw_mask, 0, REGARG(XMM0), REGARG(K0),
+       REGARG(XMM1), REGARG(XMM2))
+OPCODE(vpshldvw_xlok0xlold, vpshldvw, vpshldvw_mask, 0, REGARG(XMM0), REGARG(K0),
+       REGARG(XMM1), MEMARG(OPSZ_16))
+OPCODE(vpshldvw_xhik0xhixhi, vpshldvw, vpshldvw_mask, X64_ONLY, REGARG(XMM31), REGARG(K0),
+       REGARG(XMM16), REGARG(XMM17))
+OPCODE(vpshldvw_xlok7xloxlo, vpshldvw, vpshldvw_mask, 0, REGARG(XMM0), REGARG(K7),
+       REGARG(XMM1), REGARG(XMM2))
+OPCODE(vpshldvw_ylok0yloylo, vpshldvw, vpshldvw_mask, 0, REGARG(YMM0), REGARG(K0),
+       REGARG(YMM1), REGARG(YMM2))
+OPCODE(vpshldvw_ylok0ylold, vpshldvw, vpshldvw_mask, 0, REGARG(YMM0), REGARG(K0),
+       REGARG(YMM1), MEMARG(OPSZ_32))
+OPCODE(vpshldvw_yhik0yhiyhi, vpshldvw, vpshldvw_mask, X64_ONLY, REGARG(YMM31), REGARG(K0),
+       REGARG(YMM16), REGARG(YMM17))
+OPCODE(vpshldvw_ylok7yloylo, vpshldvw, vpshldvw_mask, 0, REGARG(YMM0), REGARG(K7),
+       REGARG(YMM1), REGARG(YMM2))
+OPCODE(vpshldvw_zlok0zlozlo, vpshldvw, vpshldvw_mask, 0, REGARG(ZMM0), REGARG(K0),
+       REGARG(ZMM1), REGARG(ZMM2))
+OPCODE(vpshldvw_zlok0zlold, vpshldvw, vpshldvw_mask, 0, REGARG(ZMM0), REGARG(K0),
+       REGARG(ZMM1), MEMARG(OPSZ_64))
+OPCODE(vpshldvw_zhik0zhizhi, vpshldvw, vpshldvw_mask, X64_ONLY, REGARG(ZMM31), REGARG(K0),
+       REGARG(ZMM16), REGARG(ZMM17))
+OPCODE(vpshldvw_zlok7zlozlo, vpshldvw, vpshldvw_mask, 0, REGARG(ZMM0), REGARG(K7),
+       REGARG(ZMM1), REGARG(ZMM2))
+OPCODE(vpshldvd_xlok0xloxlo, vpshldvd, vpshldvd_mask, 0, REGARG(XMM0), REGARG(K0),
+       REGARG(XMM1), REGARG(XMM2))
+OPCODE(vpshldvd_xlok0xlold, vpshldvd, vpshldvd_mask, 0, REGARG(XMM0), REGARG(K0),
+       REGARG(XMM1), MEMARG(OPSZ_16))
+OPCODE(vpshldvd_xlok0xlobcst, vpshldvd, vpshldvd_mask, 0, REGARG(XMM0), REGARG(K0),
+       REGARG(XMM1), MEMARG(OPSZ_4))
+OPCODE(vpshldvd_xhik0xhixhi, vpshldvd, vpshldvd_mask, X64_ONLY, REGARG(XMM31), REGARG(K0),
+       REGARG(XMM16), REGARG(XMM17))
+OPCODE(vpshldvd_xlok7xloxlo, vpshldvd, vpshldvd_mask, 0, REGARG(XMM0), REGARG(K7),
+       REGARG(XMM1), REGARG(XMM2))
+OPCODE(vpshldvd_ylok0yloylo, vpshldvd, vpshldvd_mask, 0, REGARG(YMM0), REGARG(K0),
+       REGARG(YMM1), REGARG(YMM2))
+OPCODE(vpshldvd_ylok0ylold, vpshldvd, vpshldvd_mask, 0, REGARG(YMM0), REGARG(K0),
+       REGARG(YMM1), MEMARG(OPSZ_32))
+OPCODE(vpshldvd_ylok0ylobcst, vpshldvd, vpshldvd_mask, 0, REGARG(YMM0), REGARG(K0),
+       REGARG(YMM1), MEMARG(OPSZ_4))
+OPCODE(vpshldvd_yhik0yhiyhi, vpshldvd, vpshldvd_mask, X64_ONLY, REGARG(YMM31), REGARG(K0),
+       REGARG(YMM16), REGARG(YMM17))
+OPCODE(vpshldvd_ylok7yloylo, vpshldvd, vpshldvd_mask, 0, REGARG(YMM0), REGARG(K7),
+       REGARG(YMM1), REGARG(YMM2))
+OPCODE(vpshldvd_zlok0zlozlo, vpshldvd, vpshldvd_mask, 0, REGARG(ZMM0), REGARG(K0),
+       REGARG(ZMM1), REGARG(ZMM2))
+OPCODE(vpshldvd_zlok0zlold, vpshldvd, vpshldvd_mask, 0, REGARG(ZMM0), REGARG(K0),
+       REGARG(ZMM1), MEMARG(OPSZ_64))
+OPCODE(vpshldvd_zlok0zlobcst, vpshldvd, vpshldvd_mask, 0, REGARG(ZMM0), REGARG(K0),
+       REGARG(ZMM1), MEMARG(OPSZ_4))
+OPCODE(vpshldvd_zhik0zhizhi, vpshldvd, vpshldvd_mask, X64_ONLY, REGARG(ZMM31), REGARG(K0),
+       REGARG(ZMM16), REGARG(ZMM17))
+OPCODE(vpshldvd_zlok7zlozlo, vpshldvd, vpshldvd_mask, 0, REGARG(ZMM0), REGARG(K7),
+       REGARG(ZMM1), REGARG(ZMM2))
+OPCODE(vpshrdvw_xlok0xloxlo, vpshrdvw, vpshrdvw_mask, 0, REGARG(XMM0), REGARG(K0),
+       REGARG(XMM1), REGARG(XMM2))
+OPCODE(vpshrdvw_xlok0xlold, vpshrdvw, vpshrdvw_mask, 0, REGARG(XMM0), REGARG(K0),
+       REGARG(XMM1), MEMARG(OPSZ_16))
+OPCODE(vpshrdvw_xhik0xhixhi, vpshrdvw, vpshrdvw_mask, X64_ONLY, REGARG(XMM31), REGARG(K0),
+       REGARG(XMM16), REGARG(XMM17))
+OPCODE(vpshrdvw_xlok7xloxlo, vpshrdvw, vpshrdvw_mask, 0, REGARG(XMM0), REGARG(K7),
+       REGARG(XMM1), REGARG(XMM2))
+OPCODE(vpshrdvw_ylok0yloylo, vpshrdvw, vpshrdvw_mask, 0, REGARG(YMM0), REGARG(K0),
+       REGARG(YMM1), REGARG(YMM2))
+OPCODE(vpshrdvw_ylok0ylold, vpshrdvw, vpshrdvw_mask, 0, REGARG(YMM0), REGARG(K0),
+       REGARG(YMM1), MEMARG(OPSZ_32))
+OPCODE(vpshrdvw_yhik0yhiyhi, vpshrdvw, vpshrdvw_mask, X64_ONLY, REGARG(YMM31), REGARG(K0),
+       REGARG(YMM16), REGARG(YMM17))
+OPCODE(vpshrdvw_ylok7yloylo, vpshrdvw, vpshrdvw_mask, 0, REGARG(YMM0), REGARG(K7),
+       REGARG(YMM1), REGARG(YMM2))
+OPCODE(vpshrdvw_zlok0zlozlo, vpshrdvw, vpshrdvw_mask, 0, REGARG(ZMM0), REGARG(K0),
+       REGARG(ZMM1), REGARG(ZMM2))
+OPCODE(vpshrdvw_zlok0zlold, vpshrdvw, vpshrdvw_mask, 0, REGARG(ZMM0), REGARG(K0),
+       REGARG(ZMM1), MEMARG(OPSZ_64))
+OPCODE(vpshrdvw_zhik0zhizhi, vpshrdvw, vpshrdvw_mask, X64_ONLY, REGARG(ZMM31), REGARG(K0),
+       REGARG(ZMM16), REGARG(ZMM17))
+OPCODE(vpshrdvw_zlok7zlozlo, vpshrdvw, vpshrdvw_mask, 0, REGARG(ZMM0), REGARG(K7),
+       REGARG(ZMM1), REGARG(ZMM2))
+OPCODE(vpshrdvd_xlok0xloxlo, vpshrdvd, vpshrdvd_mask, 0, REGARG(XMM0), REGARG(K0),
+       REGARG(XMM1), REGARG(XMM2))
+OPCODE(vpshrdvd_xlok0xlold, vpshrdvd, vpshrdvd_mask, 0, REGARG(XMM0), REGARG(K0),
+       REGARG(XMM1), MEMARG(OPSZ_16))
+OPCODE(vpshrdvd_xlok0xlobcst, vpshrdvd, vpshrdvd_mask, 0, REGARG(XMM0), REGARG(K0),
+       REGARG(XMM1), MEMARG(OPSZ_4))
+OPCODE(vpshrdvd_xhik0xhixhi, vpshrdvd, vpshrdvd_mask, X64_ONLY, REGARG(XMM31), REGARG(K0),
+       REGARG(XMM16), REGARG(XMM17))
+OPCODE(vpshrdvd_xlok7xloxlo, vpshrdvd, vpshrdvd_mask, 0, REGARG(XMM0), REGARG(K7),
+       REGARG(XMM1), REGARG(XMM2))
+OPCODE(vpshrdvd_ylok0yloylo, vpshrdvd, vpshrdvd_mask, 0, REGARG(YMM0), REGARG(K0),
+       REGARG(YMM1), REGARG(YMM2))
+OPCODE(vpshrdvd_ylok0ylold, vpshrdvd, vpshrdvd_mask, 0, REGARG(YMM0), REGARG(K0),
+       REGARG(YMM1), MEMARG(OPSZ_32))
+OPCODE(vpshrdvd_ylok0ylobcst, vpshrdvd, vpshrdvd_mask, 0, REGARG(YMM0), REGARG(K0),
+       REGARG(YMM1), MEMARG(OPSZ_4))
+OPCODE(vpshrdvd_yhik0yhiyhi, vpshrdvd, vpshrdvd_mask, X64_ONLY, REGARG(YMM31), REGARG(K0),
+       REGARG(YMM16), REGARG(YMM17))
+OPCODE(vpshrdvd_ylok7yloylo, vpshrdvd, vpshrdvd_mask, 0, REGARG(YMM0), REGARG(K7),
+       REGARG(YMM1), REGARG(YMM2))
+OPCODE(vpshrdvd_zlok0zlozlo, vpshrdvd, vpshrdvd_mask, 0, REGARG(ZMM0), REGARG(K0),
+       REGARG(ZMM1), REGARG(ZMM2))
+OPCODE(vpshrdvd_zlok0zlold, vpshrdvd, vpshrdvd_mask, 0, REGARG(ZMM0), REGARG(K0),
+       REGARG(ZMM1), MEMARG(OPSZ_64))
+OPCODE(vpshrdvd_zlok0zlobcst, vpshrdvd, vpshrdvd_mask, 0, REGARG(ZMM0), REGARG(K0),
+       REGARG(ZMM1), MEMARG(OPSZ_4))
+OPCODE(vpshrdvd_zhik0zhizhi, vpshrdvd, vpshrdvd_mask, X64_ONLY, REGARG(ZMM31), REGARG(K0),
+       REGARG(ZMM16), REGARG(ZMM17))
+OPCODE(vpshrdvd_zlok7zlozlo, vpshrdvd, vpshrdvd_mask, 0, REGARG(ZMM0), REGARG(K7),
+       REGARG(ZMM1), REGARG(ZMM2))

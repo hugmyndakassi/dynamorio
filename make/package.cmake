@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2011-2022 Google, Inc.    All rights reserved.
+# Copyright (c) 2011-2024 Google, Inc.    All rights reserved.
 # Copyright (c) 2009-2010 VMware, Inc.    All rights reserved.
 # **********************************************************
 
@@ -125,7 +125,7 @@ if ($ENV{DYNAMORIO_CROSS_ANDROID_ONLY} MATCHES "yes")
     set(arg_cacheappend "${arg_cacheappend}
       PACKAGE_PLATFORM:STRING=ARM-
       PACKAGE_SUBSYS:STRING=-EABI
-      CMAKE_TOOLCHAIN_FILE:PATH=${CTEST_SOURCE_DIRECTORY}/make/toolchain-android.cmake
+      CMAKE_TOOLCHAIN_FILE:PATH=${CTEST_SOURCE_DIRECTORY}/make/toolchain-android-gcc.cmake
       ANDROID_TOOLCHAIN:PATH=$ENV{DYNAMORIO_ANDROID_TOOLCHAIN}")
   else ()
     message(FATAL_ERROR "Android is only supported as 32_only")
@@ -164,9 +164,14 @@ set(base_cache "
   BUILD_NUMBER:STRING=${arg_build}
   UNIQUE_BUILD_NUMBER:STRING=${arg_ubuild}
   BUILD_PACKAGE:BOOL=ON
-  AUTOMATED_TESTING:BOOL=ON
   ${arg_cacheappend}
   ")
+
+if (WIN32)
+  # TODO i#5767: Install a working zlib package on our Windows GA CI images.
+  set(base_cache "${base_cache}
+    DISABLE_ZLIB:BOOL=ON")
+endif()
 
 # version is optional
 if (arg_version)

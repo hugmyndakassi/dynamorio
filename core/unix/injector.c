@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2012-2022 Google, Inc.  All rights reserved.
+ * Copyright (c) 2012-2025 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -56,7 +56,7 @@
 #include "dr_inject.h"
 
 #include <assert.h>
-#ifndef MACOS
+#if !(defined(MACOS) || defined(ANDROID64))
 /* If we don't define _EXTERNALIZE_CTYPE_INLINES_*, we get errors vs tolower
  * in globals.h; if we do, we get errors on isspace missing.  We solve that
  * by just by supplying our own isspace.
@@ -93,13 +93,15 @@ typedef enum {
     PLATFORM_UNKNOWN,
 } platform_status_t;
 
-#ifdef MACOS
+#if defined(MACOS) || defined(ANDROID64)
 /* The type is just "int", and the values are different, so we use the Linux
  * type name to match the Linux constant names.
  */
 #    ifndef PT_ATTACHEXC /* New replacement for PT_ATTACH */
 #        define PT_ATTACHEXC PT_ATTACH
 #    endif
+
+#    ifdef MACOS
 enum __ptrace_request {
     PTRACE_TRACEME = PT_TRACE_ME,
     PTRACE_CONT = PT_CONTINUE,
@@ -108,6 +110,7 @@ enum __ptrace_request {
     PTRACE_DETACH = PT_DETACH,
     PTRACE_SINGLESTEP = PT_STEP,
 };
+#    endif
 
 /* clang-format off */ /* (work around clang-format bug) */
 static int inline
@@ -498,7 +501,7 @@ exe_is_right_bitwidth(const char *exe, int *errcode)
  */
 DR_EXPORT
 int
-dr_inject_process_create(const char *exe, const char **argv, void **data OUT)
+dr_inject_process_create(const char *exe, const char **argv, void **data DR_PARAM_OUT)
 {
     int r;
     int fds[2];
@@ -550,7 +553,7 @@ error:
 
 DR_EXPORT
 int
-dr_inject_prepare_to_exec(const char *exe, const char **argv, void **data OUT)
+dr_inject_prepare_to_exec(const char *exe, const char **argv, void **data DR_PARAM_OUT)
 {
     dr_inject_info_t *info = create_inject_info(exe, argv);
     int errcode = 0;
@@ -572,7 +575,7 @@ dr_inject_prepare_to_exec(const char *exe, const char **argv, void **data OUT)
 DR_EXPORT
 int
 dr_inject_prepare_to_attach(process_id_t pid, const char *appname, bool wait_syscall,
-                            void **data OUT)
+                            void **data DR_PARAM_OUT)
 {
     dr_inject_info_t *info = create_inject_info(appname, NULL);
     int errcode = 0;
@@ -1248,7 +1251,7 @@ injectee_run_get_retval(dr_inject_info_t *info, void *dc, instrlist_t *ilist)
 #    elif defined(ARM)
     app_mode = TEST(EFLAGS_T, regs.uregs[16]) ? DR_ISA_ARM_THUMB : DR_ISA_ARM_A32;
 #    elif defined(RISCV64)
-    app_mode = DR_ISA_RV64IMAFDC;
+    app_mode = DR_ISA_RV64;
 #    else
 #        error Unsupported arch.
 #    endif
@@ -1399,8 +1402,8 @@ injectee_mmap(dr_inject_info_t *info, void *addr, size_t sz, int prot, int flags
  * injector_dr_fd to injectee_dr_fd to map the former to the latter.
  */
 static byte *
-injectee_map_file(file_t f, size_t *size INOUT, uint64 offs, app_pc addr, uint prot,
-                  map_flags_t map_flags)
+injectee_map_file(file_t f, size_t *size DR_PARAM_INOUT, uint64 offs, app_pc addr,
+                  uint prot, map_flags_t map_flags)
 {
     int fd;
     int flags = 0;
@@ -1448,6 +1451,17 @@ injectee_unmap(byte *addr, size_t size)
         return false;
     }
     return true;
+}
+
+static byte *
+injectee_overlap_map_file(file_t f, size_t *size DR_PARAM_INOUT, uint64 offs, app_pc addr,
+                          uint prot, map_flags_t map_flags)
+{
+    /* This works only if the user wants the new mapping only at the given addr,
+     * and it is acceptable to unmap any mapping already existing there.
+     */
+    ASSERT(TEST(MAP_FILE_FIXED, map_flags));
+    return injectee_map_file(f, size, offs, addr, prot, map_flags);
 }
 
 /* Do an mprotect syscall in the injectee. */
@@ -1781,7 +1795,8 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
     injectee_dr_fd = dr_fd;
     injected_base = elf_loader_map_phdrs(
         &loader, true /*fixed*/, injectee_map_file, injectee_unmap, injectee_prot, NULL,
-        injectee_memset, MODLOAD_SEPARATE_PROCESS /*!reachable*/);
+        injectee_memset, MODLOAD_SEPARATE_PROCESS /*!reachable*/,
+        injectee_overlap_map_file);
     if (injected_base == NULL) {
         if (verbose)
             fprintf(stderr, "Unable to mmap libdynamorio.so in injectee\n");
@@ -1802,7 +1817,7 @@ inject_ptrace(dr_inject_info_t *info, const char *library_path)
 #    elif defined(ARM)
     app_mode = TEST(EFLAGS_T, regs.uregs[16]) ? DR_ISA_ARM_THUMB : DR_ISA_ARM_A32;
 #    elif defined(RISCV64)
-    app_mode = DR_ISA_RV64IMAFDC;
+    app_mode = DR_ISA_RV64;
 #    else
 #        error Unsupported arch.
 #    endif

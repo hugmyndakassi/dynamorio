@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2015-2022 Google, Inc.  All rights reserved.
+ * Copyright (c) 2015-2023 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -35,6 +35,9 @@
 #include "ipc_reader.h"
 #include "../common/memref.h"
 #include "../common/utils.h"
+
+namespace dynamorio {
+namespace drmemtrace {
 
 #ifdef VERBOSE
 #    include <iostream>
@@ -92,6 +95,9 @@ ipc_reader_t::~ipc_reader_t()
 trace_entry_t *
 ipc_reader_t::read_next_entry()
 {
+    trace_entry_t *from_queue = read_queued_entry();
+    if (from_queue != nullptr)
+        return from_queue;
     ++cur_buf_;
     if (cur_buf_ >= end_buf_) {
         ssize_t sz = pipe_.read(buf_, sizeof(buf_)); // blocking read
@@ -116,3 +122,6 @@ ipc_reader_t::read_next_entry()
         at_eof_ = true;
     return cur_buf_;
 }
+
+} // namespace drmemtrace
+} // namespace dynamorio

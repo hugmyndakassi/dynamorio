@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2016-2023 Google, Inc.  All rights reserved.
+ * Copyright (c) 2016-2024 Google, Inc.  All rights reserved.
  * **********************************************************/
 
 /*
@@ -30,12 +30,31 @@
  * DAMAGE.
  */
 
+#include "reader.h"
+
 #include <assert.h>
 #include <inttypes.h>
+#include <stdint.h>
 #include <string.h>
-#include "reader.h"
-#include "../common/memref.h"
-#include "../common/utils.h"
+
+#include <queue>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+
+#include "memref.h"
+#include "utils.h"
+#include "trace_entry.h"
+
+namespace dynamorio {
+namespace drmemtrace {
+
+// We want to abort in release build for some cases.
+#define assert_release_too(cond) \
+    do {                         \
+        if (!(cond))             \
+            abort();             \
+    } while (0)
 
 // Work around clang-format bug: no newline after return type for single-char operator.
 // clang-format off
@@ -44,6 +63,16 @@ reader_t::operator*()
 // clang-format on
 {
     return cur_ref_;
+}
+
+trace_entry_t *
+reader_t::read_queued_entry()
+{
+    if (queue_.empty())
+        return nullptr;
+    entry_copy_ = queue_.front();
+    queue_.pop();
+    return &entry_copy_;
 }
 
 reader_t &
@@ -66,7 +95,13 @@ reader_t::operator++()
             // We've already presented the thread exit entry to the analyzer.
             continue;
         }
-        VPRINT(this, 4, "RECV: type=%s (%d), size=%d, addr=0x%zx\n",
+        if (input_entry_->type == TRACE_TYPE_HEADER) {
+            // We support complete traces being packaged in archives and then read
+            // sequentially.  We just keep going past the header.
+            VPRINT(this, 2, "Assuming header is part of concatenated traces\n");
+            continue;
+        }
+        VPRINT(this, 5, "RECV: type=%s (%d), size=%d, addr=0x%zx\n",
                trace_type_names[input_entry_->type], input_entry_->type,
                input_entry_->size, input_entry_->addr);
         if (process_input_entry())
@@ -107,7 +142,7 @@ reader_t::process_input_entry()
     case TRACE_TYPE_PREFETCH_WRITE_L3:
     case TRACE_TYPE_PREFETCH_WRITE_L3_NT:
         have_memref = true;
-        assert(cur_tid_ != 0 && cur_pid_ != 0);
+        assert((cur_tid_ != 0 && cur_pid_ != 0) || core_sharded_);
         cur_ref_.data.pid = cur_pid_;
         cur_ref_.data.tid = cur_tid_;
         cur_ref_.data.type = (trace_type_t)input_entry_->type;
@@ -142,12 +177,14 @@ reader_t::process_input_entry()
     case TRACE_TYPE_INSTR_DIRECT_JUMP:
     case TRACE_TYPE_INSTR_INDIRECT_JUMP:
     case TRACE_TYPE_INSTR_CONDITIONAL_JUMP:
+    case TRACE_TYPE_INSTR_TAKEN_JUMP:
+    case TRACE_TYPE_INSTR_UNTAKEN_JUMP:
     case TRACE_TYPE_INSTR_DIRECT_CALL:
     case TRACE_TYPE_INSTR_INDIRECT_CALL:
     case TRACE_TYPE_INSTR_RETURN:
     case TRACE_TYPE_INSTR_SYSENTER:
     case TRACE_TYPE_INSTR_NO_FETCH:
-        assert(cur_tid_ != 0 && cur_pid_ != 0);
+        assert((cur_tid_ != 0 && cur_pid_ != 0) || core_sharded_);
         if (input_entry_->size == 0) {
             // Just an entry to tell us the PC of the subsequent memref,
             // used with -L0_filter where we don't reliably have icache
@@ -159,6 +196,12 @@ reader_t::process_input_entry()
             cur_ref_.instr.tid = cur_tid_;
             cur_ref_.instr.type = (trace_type_t)input_entry_->type;
             cur_ref_.instr.size = input_entry_->size;
+            if (type_is_instr_branch(cur_ref_.instr.type) &&
+                !type_is_instr_direct_branch(cur_ref_.instr.type)) {
+                cur_ref_.instr.indirect_branch_target = last_branch_target_;
+            } else {
+                cur_ref_.instr.indirect_branch_target = 0;
+            }
             cur_pc_ = input_entry_->addr;
             cur_ref_.instr.addr = cur_pc_;
             next_pc_ = cur_pc_ + cur_ref_.instr.size;
@@ -167,10 +210,22 @@ reader_t::process_input_entry()
                 ++cur_instr_count_;
             // Look for encoding bits that belong to this instr.
             if (last_encoding_.size > 0) {
-                if (last_encoding_.size != cur_ref_.instr.size) {
-                    ERRMSG("Encoding size %zu != instr size %zu\n", last_encoding_.size,
-                           cur_ref_.instr.size);
-                    assert(false);
+                if (last_encoding_.size != cur_ref_.instr.size &&
+                    /* OFFLINE_FILE_TYPE_ARCH_REGDEPS traces have encodings with
+                     * size != ifetch. It's a design choice, not an error, hence
+                     * we avoid this sanity check for these traces.
+                     */
+                    !TESTANY(OFFLINE_FILE_TYPE_ARCH_REGDEPS, filetype_)) {
+                    ERRMSG(
+                        "Encoding size %zu != instr size %zu for PC 0x%zx at ord %" PRIu64
+                        " instr %" PRIu64 " last_timestamp=0x%" PRIx64
+                        " enc: %x %x inst type: %d\n",
+                        last_encoding_.size, cur_ref_.instr.size, cur_ref_.instr.addr,
+                        get_record_ordinal(), get_instruction_ordinal(),
+                        get_last_timestamp(), last_encoding_.bits[0],
+                        last_encoding_.bits[1], cur_ref_.instr.type);
+                    // Encoding errors indicate serious problems so we always abort.
+                    assert_release_too(false);
                 }
                 memcpy(cur_ref_.instr.encoding, last_encoding_.bits, last_encoding_.size);
                 cur_ref_.instr.encoding_is_new = true;
@@ -180,9 +235,14 @@ reader_t::process_input_entry()
                 const auto &it = encodings_.find(cur_ref_.instr.addr);
                 if (it != encodings_.end()) {
                     memcpy(cur_ref_.instr.encoding, it->second.bits, it->second.size);
-                } else if (!expect_no_encodings_) {
+                } else if (!expect_no_encodings_ &&
+                           // A thread can migrate after encoding records are seen.
+                           // It is up to the user to properly handle encodings
+                           // in this mode.
+                           !core_sharded_) {
                     ERRMSG("Missing encoding for 0x%zx\n", cur_ref_.instr.addr);
-                    assert(false);
+                    // Encoding errors indicate serious problems so we always abort.
+                    assert_release_too(false);
                 }
             }
             last_encoding_.size = 0;
@@ -214,7 +274,7 @@ reader_t::process_input_entry()
         break;
     case TRACE_TYPE_INSTR_FLUSH:
     case TRACE_TYPE_DATA_FLUSH:
-        assert(cur_tid_ != 0 && cur_pid_ != 0);
+        assert((cur_tid_ != 0 && cur_pid_ != 0) || core_sharded_);
         cur_ref_.flush.pid = cur_pid_;
         cur_ref_.flush.tid = cur_tid_;
         cur_ref_.flush.type = (trace_type_t)input_entry_->type;
@@ -238,7 +298,7 @@ reader_t::process_input_entry()
     case TRACE_TYPE_THREAD_EXIT:
         cur_tid_ = (memref_tid_t)input_entry_->addr;
         cur_pid_ = tid2pid_[cur_tid_];
-        assert(cur_tid_ != 0 && cur_pid_ != 0);
+        assert((cur_tid_ != 0 && cur_pid_ != 0) || core_sharded_);
         // We do pass this to the caller but only some fields are valid:
         cur_ref_.exit.pid = cur_pid_;
         cur_ref_.exit.tid = cur_tid_;
@@ -252,7 +312,9 @@ reader_t::process_input_entry()
         break;
     case TRACE_TYPE_MARKER:
         cur_ref_.marker.type = (trace_type_t)input_entry_->type;
-        assert(cur_tid_ != 0 && cur_pid_ != 0);
+        assert((cur_tid_ != 0 && cur_pid_ != 0) || core_sharded_ ||
+               // We have to wait for the filetype to see whether we're core-sharded.
+               !found_filetype_);
         cur_ref_.marker.pid = cur_pid_;
         cur_ref_.marker.tid = cur_tid_;
         cur_ref_.marker.marker_type = (trace_marker_type_t)input_entry_->size;
@@ -271,6 +333,9 @@ reader_t::process_input_entry()
             skip_chunk_header_.erase(cur_tid_);
         } else if (cur_ref_.marker.marker_type == TRACE_MARKER_TYPE_RECORD_ORDINAL) {
             // Not exposed to tools.
+        } else if (cur_ref_.marker.marker_type == TRACE_MARKER_TYPE_BRANCH_TARGET) {
+            // Not exposed to tools.
+            last_branch_target_ = cur_ref_.marker.marker_value;
         } else {
             have_memref = true;
         }
@@ -279,14 +344,24 @@ reader_t::process_input_entry()
             // already seen, so this condition is not really needed. But to
             // be future-proof, we want to avoid looking at timestamps that
             // won't be passed to the user as well.
-            if (have_memref)
+            if (have_memref) {
                 last_timestamp_ = cur_ref_.marker.marker_value;
-        } else if (cur_ref_.marker.marker_type == TRACE_MARKER_TYPE_VERSION)
+                if (first_timestamp_ == 0)
+                    first_timestamp_ = last_timestamp_;
+            }
+        } else if (cur_ref_.marker.marker_type == TRACE_MARKER_TYPE_CPU_ID)
+            last_cpuid_ = cur_ref_.marker.marker_value;
+        else if (cur_ref_.marker.marker_type == TRACE_MARKER_TYPE_VERSION)
             version_ = cur_ref_.marker.marker_value;
         else if (cur_ref_.marker.marker_type == TRACE_MARKER_TYPE_FILETYPE) {
             filetype_ = cur_ref_.marker.marker_value;
-            if (TESTANY(OFFLINE_FILE_TYPE_ENCODINGS, filetype_))
+            found_filetype_ = true;
+            if (TESTANY(OFFLINE_FILE_TYPE_ENCODINGS, filetype_)) {
                 expect_no_encodings_ = false;
+            }
+            if (TESTANY(OFFLINE_FILE_TYPE_CORE_SHARDED, filetype_)) {
+                core_sharded_ = true;
+            }
         } else if (cur_ref_.marker.marker_type == TRACE_MARKER_TYPE_CACHE_LINE_SIZE)
             cache_line_size_ = cur_ref_.marker.marker_value;
         else if (cur_ref_.marker.marker_type == TRACE_MARKER_TYPE_PAGE_SIZE)
@@ -295,6 +370,21 @@ reader_t::process_input_entry()
             chunk_instr_count_ = cur_ref_.marker.marker_value;
         else if (cur_ref_.marker.marker_type == TRACE_MARKER_TYPE_CHUNK_FOOTER)
             skip_chunk_header_.insert(cur_tid_);
+        else if (cur_ref_.marker.marker_type == TRACE_MARKER_TYPE_SYSCALL_TRACE_START ||
+                 cur_ref_.marker.marker_type == TRACE_MARKER_TYPE_CONTEXT_SWITCH_START) {
+            in_kernel_trace_ = true;
+        } else if (cur_ref_.marker.marker_type == TRACE_MARKER_TYPE_SYSCALL_TRACE_END ||
+                   cur_ref_.marker.marker_type == TRACE_MARKER_TYPE_CONTEXT_SWITCH_END) {
+            in_kernel_trace_ = false;
+        }
+        break;
+    case TRACE_TYPE_HEADER:
+        // We support complete traces being packaged in archives and then read
+        // sequentially, or core-sharded record_filter operation.
+        // We just keep going past the header.
+        VPRINT(
+            this, 2,
+            "Assuming header is part of concatenated or on-disk-core-sharded traces\n");
         break;
     default:
         ERRMSG("Unknown trace entry type %s (%d)\n", trace_type_names[input_entry_->type],
@@ -310,7 +400,7 @@ reader_t::process_input_entry()
             --suppress_ref_count_;
         } else {
             if (suppress_ref_count_ == 0) {
-                // Ensure get_record_ordinal() ignores it.
+                // Ensure is_record_synthetic() ignores it.
                 suppress_ref_count_ = -1;
             }
             ++cur_ref_count_;
@@ -320,20 +410,157 @@ reader_t::process_input_entry()
     return have_memref;
 }
 
+bool
+reader_t::pre_skip_instructions()
+{
+    // If the user asks to skip from the very start, we still need to find the chunk
+    // count marker and drain the header queue and populate the stream header values.
+    // XXX: We assume the page size is the final header; it is complex to wait for
+    // the timestamp as we don't want to read it yet.
+    while (page_size_ == 0) {
+        input_entry_ = read_next_entry();
+        if (input_entry_ == nullptr) {
+            at_eof_ = true;
+            return false;
+        }
+        VPRINT(this, 4, "PRE-SKIP: type=%s (%d), size=%d, addr=0x%zx\n",
+               trace_type_names[input_entry_->type], input_entry_->type,
+               input_entry_->size, input_entry_->addr);
+        if (input_entry_->type != TRACE_TYPE_MARKER ||
+            input_entry_->size == TRACE_MARKER_TYPE_TIMESTAMP) {
+            // Likely some mock in a test with no page size header: just move on.
+            queue_.push(*input_entry_);
+            break;
+        }
+        process_input_entry();
+    }
+    return true;
+}
+
 reader_t &
 reader_t::skip_instructions(uint64_t instruction_count)
 {
+    // We do not support skipping with instr bundles.
+    if (bundle_idx_ != 0) {
+        ERRMSG("Skipping with instr bundles is not supported.\n");
+        assert(false);
+        at_eof_ = true;
+        return *this;
+    }
+    if (!pre_skip_instructions())
+        return *this;
+    return skip_instructions_with_timestamp(cur_instr_count_ + instruction_count);
+}
+
+reader_t &
+reader_t::skip_instructions_with_timestamp(uint64_t stop_instruction_count)
+{
     // This base class has no fast seeking and must do a linear walk.
     // We have +1 because we need to skip the memrefs of the final skipped
-    // instr, so we look for the 1st unskipped instr.
-    uint64_t stop_count_ = cur_instr_count_ + instruction_count + 1;
-    while (cur_instr_count_ < stop_count_) {
-        // TODO i#5538: Remember the last timestamp+cpu and insert it; share
-        // code with the zipfile reader.
-        // TODO i#5538: If skipping from the start, Record all of the header values
-        // until the first timestamp and present them as new memtrace_stream_t
-        // interfaces.
-        ++(*this);
+    // instr, so we look for the 1st unskipped instr: but we do not want to
+    // process it so we do not use the ++ operator function.
+    uint64_t stop_count = stop_instruction_count + 1;
+    trace_entry_t timestamp = {};
+    // Use the most recent timestamp.
+    if (last_timestamp_ != 0) {
+        timestamp.type = TRACE_TYPE_MARKER;
+        timestamp.size = TRACE_MARKER_TYPE_TIMESTAMP;
+        timestamp.addr = static_cast<addr_t>(last_timestamp_);
+    }
+    trace_entry_t cpu = {};
+    if (last_cpuid_ != 0) {
+        cpu.type = TRACE_TYPE_MARKER;
+        cpu.size = TRACE_MARKER_TYPE_CPU_ID;
+        cpu.addr = static_cast<addr_t>(last_cpuid_);
+    }
+    trace_entry_t next_instr = {};
+    bool prev_was_record_ord = false;
+    bool found_real_timestamp = false;
+    VPRINT(this, 4, "Skipping from %" PRIu64 " until we reach %" PRIu64 "\n",
+           cur_instr_count_, stop_count);
+    while (cur_instr_count_ < stop_count) { // End condition is never reached.
+        // Remember the prior entry to use as the cur entry when we hit the
+        // too-far instr if we didn't find a timestamp.
+        if (input_entry_ != nullptr) // Only at start: and we checked for skipping 0.
+            entry_copy_ = *input_entry_;
+        trace_entry_t *next = read_next_entry();
+        if (next == nullptr || next->type == TRACE_TYPE_FOOTER) {
+            VPRINT(this, 1,
+                   next == nullptr ? "Failed to read next entry\n" : "Hit EOF\n");
+            at_eof_ = true;
+            return *this;
+        }
+        VPRINT(this, 4, "SKIP: type=%s (%d), size=%d, addr=0x%zx\n",
+               trace_type_names[next->type], next->type, next->size, next->addr);
+        // We need to pass up memrefs for the final skipped instr, but we don't
+        // want to process_input_entry() on the first unskipped instr so we can
+        // insert the timestamp+cpu first.
+        if (cur_instr_count_ + 1 == stop_count &&
+            type_is_instr(static_cast<trace_type_t>(next->type))) {
+            next_instr = *next;
+            break;
+        }
+        // To examine the produced memrefs we'd have to have the base reader
+        // expose these hidden entries.  It is simpler for us to read the
+        // trace_entry_t directly prior to processing by the base class.
+        if (next->type == TRACE_TYPE_MARKER) {
+            if (next->size == TRACE_MARKER_TYPE_RECORD_ORDINAL) {
+                cur_ref_count_ = next->addr;
+                prev_was_record_ord = true;
+                VPRINT(this, 4, "Found record ordinal marker: new ord %" PRIu64 "\n",
+                       cur_ref_count_);
+            } else if (next->size == TRACE_MARKER_TYPE_TIMESTAMP) {
+                timestamp = *next;
+                if (prev_was_record_ord)
+                    --cur_ref_count_; // Invisible to ordinals.
+                else
+                    found_real_timestamp = true;
+            } else if (next->size == TRACE_MARKER_TYPE_CPU_ID) {
+                cpu = *next;
+                if (prev_was_record_ord)
+                    --cur_ref_count_; // Invisible to ordinals.
+            } else
+                prev_was_record_ord = false;
+        } else
+            prev_was_record_ord = false;
+        // Update core state.
+        input_entry_ = next;
+        process_input_entry();
+    }
+    if (timestamp.type == TRACE_TYPE_MARKER && cpu.type == TRACE_TYPE_MARKER) {
+        // Insert the two markers.
+        if (!found_real_timestamp) {
+            VPRINT(this, 4, "Using duplicate timestamp\n");
+            // These synthetic entries are not real records in the unskipped trace, so we
+            // do not associate record counts with them.
+            suppress_ref_count_ = 1;
+            if (cpu.type == TRACE_TYPE_MARKER)
+                ++suppress_ref_count_;
+        } else {
+            // These are not invisible but we already counted them in the loop above
+            // so we need to avoid a double-count.
+            VPRINT(this, 4, "Found real timestamp: walking back ord from %" PRIu64 "\n",
+                   cur_ref_count_);
+            --cur_ref_count_;
+            if (cpu.type == TRACE_TYPE_MARKER)
+                --cur_ref_count_;
+        }
+        entry_copy_ = timestamp;
+        input_entry_ = &entry_copy_;
+        process_input_entry();
+        if (cpu.type == TRACE_TYPE_MARKER)
+            queue_.push(cpu);
+        queue_.push(next_instr);
+    } else {
+        // We missed the markers somehow.
+        // next_instr is our target instr, so make that the next record.
+        VPRINT(this, 1, "Skip failed to find both timestamp and cpu\n");
+        entry_copy_ = next_instr;
+        input_entry_ = &entry_copy_;
+        process_input_entry();
     }
     return *this;
 }
+
+} // namespace drmemtrace
+} // namespace dynamorio

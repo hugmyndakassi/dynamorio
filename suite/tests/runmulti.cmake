@@ -1,5 +1,5 @@
 # **********************************************************
-# Copyright (c) 2015-2022 Google, Inc.    All rights reserved.
+# Copyright (c) 2015-2024 Google, Inc.    All rights reserved.
 # **********************************************************
 
 # Redistribution and use in source and binary forms, with or without
@@ -46,6 +46,9 @@
 # glob-expansion is passed to the command.
 # If the expansion is empty for precmd, the precmd execution is skipped.
 
+# Recognize literals in if statements.
+cmake_policy(SET CMP0012 NEW)
+
 # Intra-arg space=@@ and inter-arg space=@.
 # XXX i#1327: now that we have -c and other option passing improvements we
 # should be able to get rid of this @@ stuff.
@@ -53,6 +56,9 @@ macro(process_cmdline line skip_empty err_and_out)
   string(REGEX REPLACE "@@" " " ${line} "${${line}}")
   string(REGEX REPLACE "@" ";" ${line} "${${line}}")
   string(REGEX REPLACE "!" "\\\;" ${line} "${${line}}")
+  # Clear to avoid repeating prior command if this one isn't run.
+  set(cmd_err "")
+  set(cmd_out "")
 
   if (${line} MATCHES "^foreach;")
     set(each ${${line}})
@@ -112,7 +118,7 @@ macro(process_cmdline line skip_empty err_and_out)
   set(${err_and_out} "${${err_and_out}}${cmd_err}${cmd_out}")
 endmacro()
 
-process_cmdline(precmd ON ignore)
+process_cmdline(precmd ON tomatch)
 
 process_cmdline(cmd OFF tomatch)
 
@@ -128,6 +134,6 @@ endif()
 # get expected output (must already be processed w/ regex => literal, etc.)
 file(READ "${cmp}" str)
 
-if (NOT "${tomatch}" MATCHES "${str}")
+if (NOT "${tomatch}" MATCHES "^${str}$")
   message(FATAL_ERROR "output |${tomatch}| failed to match expected output |${str}|")
 endif ()
